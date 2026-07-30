@@ -1,0 +1,27 @@
+# Minimal static or Consul retry configuration.
+
+version: v1
+
+internal_hosts:
+  - "*.svc.cluster.local"
+
+policies:
+  internal_read:
+    max_retries: 1
+    per_attempt_timeout: 2s
+    max_elapsed_time: 4s
+    initial_backoff: 100ms
+    max_backoff: 400ms
+
+  internal_write:
+    max_retries: 0
+
+  external_read:
+    max_retries: 1
+    per_attempt_timeout: 3s
+    max_elapsed_time: 5s
+    initial_backoff: 200ms
+    max_backoff: 800ms
+
+  external_write:
+    max_retries: 0

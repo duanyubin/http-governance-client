@@ -1,0 +1,45 @@
+# Consul KV: config/go/orders-api/retry
+# Service-specific operations and policy exceptions.
+
+version: v1
+
+operations:
+  - name: "queryPayment"
+    priority: 100
+    methods: ["GET"]
+    downstreams: ["payments"]
+    paths: ["/v1/payments/*"]
+
+  - name: "createPayment"
+    priority: 100
+    methods: ["POST"]
+    downstreams: ["payments"]
+    paths: ["/v1/payments"]
+
+rules:
+  # This write retry is safe only when the request carries an idempotency key
+  # and the downstream enforces it.
+  - name: "retry-idempotent-payment-create"
+    priority: 120
+    match:
+      caller: ["orders-api"]
+      downstream: ["payments"]
+      operation: ["createPayment"]
+      method: ["POST"]
+      class: ["internal_write"]
+    policy:
+      max_retries: 1
+      max_elapsed_time: 3s
+      initial_backoff: 100ms
+      max_backoff: 300ms
+
+  - name: "limit-fraud-api-retries"
+    priority: 110
+    match:
+      caller: ["orders-api"]
+      downstream: ["fraud-api"]
+      class: ["external_read"]
+    policy:
+      max_retries: 1
+      per_attempt_timeout: 2s
+      max_elapsed_time: 3s

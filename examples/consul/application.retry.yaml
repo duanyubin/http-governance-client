@@ -1,0 +1,56 @@
+# Consul KV: config/go/application/retry
+# Shared baseline inherited by every service.
+
+version: v1
+
+internal_hosts:
+  - "*.svc.cluster.local"
+  - "localhost"
+  - "127.0.0.1"
+
+downstreams:
+  - name: "payments"
+    hosts:
+      - "payments.svc.cluster.local"
+      - "api.example.com/payments"
+  - name: "inventory"
+    hosts:
+      - "inventory.svc.cluster.local"
+  - name: "fraud-api"
+    hosts:
+      - "fraud.example.net"
+
+policies:
+  internal_read:
+    max_retries: 1
+    per_attempt_timeout: 2s
+    max_elapsed_time: 4s
+    initial_backoff: 100ms
+    max_backoff: 400ms
+    retry_on_statuses: [408, 429, 500, 502, 503, 504]
+    retry_on_429: true
+
+  internal_write:
+    max_retries: 0
+    per_attempt_timeout: 2s
+
+  external_read:
+    max_retries: 1
+    per_attempt_timeout: 3s
+    max_elapsed_time: 5s
+    initial_backoff: 200ms
+    max_backoff: 800ms
+    retry_on_statuses: [408, 429, 500, 502, 503, 504]
+    retry_on_429: true
+
+  external_write:
+    max_retries: 0
+    per_attempt_timeout: 3s
+
+rules:
+  - name: "disable-write-retries"
+    priority: 80
+    match:
+      class: ["internal_write", "external_write"]
+    policy:
+      disable_retry: true
