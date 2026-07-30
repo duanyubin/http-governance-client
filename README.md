@@ -102,7 +102,10 @@ if result.StatusCode < 200 || result.StatusCode >= 300 {
 - 读请求默认最多额外重试一次
 - 写请求默认不自动重试
 - 写请求只有在具备幂等保障后，才应通过精确规则开启重试
-- 自定义请求体必须可重放；使用 `http.Request` 时需要正确设置 `GetBody`
+- 带 Body 的请求只有在请求体可重放时才会自动重试
+  - 使用 `InternalPost`、`Post` 等辅助函数时，组件已生成可重放的请求体，无需额外处理
+  - 直接创建 `http.Request` 时，`bytes.Buffer`、`bytes.Reader` 和 `strings.Reader` 由标准库自动设置 `GetBody`
+  - 使用其他自定义或流式 Body 时，需要自行设置 `GetBody`；未设置时组件会关闭该请求的自动重试，只发送一次
 - HTTP 尝试与退避受 `max_elapsed_time`、请求 Context deadline 和 `X-Request-Deadline` 中最早的截止时间约束
 - 上游 `X-No-More-Retry=true` 不能被下游配置重新放宽
 
