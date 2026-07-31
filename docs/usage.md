@@ -291,25 +291,21 @@ httpclient.StopRetryConfigAutoReload()
 
 ## 7. 日志与观测
 
-组件通过 `log/slog` 输出：
+### 7.1 默认日志
 
-- `HTTPClient retry scheduled`
-- `HTTPClient request finished`
-- Consul 热更新成功或失败日志
+组件通过 `log/slog` 直接输出以下日志：
 
-`RetryObserver` 接收重试调度事件，`RetryResultObserver` 接收最终请求结果。最终事件包含
-`caller`、`downstream`、`operation`、`class`、尝试次数、状态码和最终原因等字段。
+| 日志 | 级别 | 含义 |
+| --- | --- | --- |
+| `HTTPClient retry scheduled` | Warn | 已决定执行一次重试 |
+| `HTTPClient request finished` | Info | 一次 Transport 出站调用的最终结果 |
+| Consul 配置重新加载 | Info / Warn | 热更新成功或失败 |
 
-```go
-httpclient.SetRetryObserver(retryObserver)
-httpclient.SetRetryResultObserver(resultObserver)
-```
+`HTTPClient request finished` 包含完整请求 URL。请求和响应 Header 只在 Debug 级别的详细日志中输出；Body 日志默认也使用 Debug 级别，可通过 `SetBodyLogLevel(...)` 调整。
 
-结果事件反映 Transport 层完成情况，不包含辅助函数之后的 JSON/Protobuf 解码耗时或解码错误。Observer、Skipper、自定义 Resolver 和 Provider 都可能被多个请求并发调用，必须并发安全。这些扩展点为同步回调，不能被 `max_elapsed_time` 强制中断，可能消耗剩余预算或延迟实际返回，不应执行阻塞操作。
+URL、Header 和 Body 都可能包含查询参数、认证信息、Cookie、Token 或业务数据。生产环境应结合日志等级、采集范围和访问权限完成数据安全评估。
 
-Info 级别的 `HTTPClient request finished` 日志包含完整请求 URL。请求和响应 Header 只在 Debug 级别的详细日志中输出；Body 日志默认也使用 Debug 级别，可通过 `SetBodyLogLevel(...)` 调整。URL、Header 和 Body 都可能包含查询参数、认证信息、Cookie、Token 或业务数据，生产环境应结合日志等级、采集范围和访问权限完成数据安全评估。
-
-### 7.1 基于最终结果日志统计
+### 7.2 基于最终结果日志统计
 
 `HTTPClient request finished` 使用 Info 级别输出，每条日志表示一次完成的 Transport 出站调用；本地重试不会额外产生最终结果日志。标准 `http.Client` 自动跟随重定向时，每个重定向跳都会产生一条最终结果日志，因此以下指标默认按 Transport 调用量统计：
 
@@ -335,7 +331,48 @@ Info 级别的 `HTTPClient request finished` 日志包含完整请求 URL。请�
 - Info 日志必须开启；命中 `SkipperFunc` 的请求不产生最终结果日志。
 - 如需统计包含重定向的 `client.Do` 级调用量，应关闭自动重定向或在调用方按统一请求标识聚合。
 
-组件不直接提供指标后端或链路追踪 SDK。调用方可在 Observer 中接入自己的监控系统。
+### 7.3 可选的 Observer
+
+Observer 用于将重试事件直接接入指标、链路追踪或其他监控系统：
+
+- `RetryObserver`：组件决定执行重试时调用，每次重试产生一个事件
+- `RetryResultObserver`：一次出站调用完成后调用一次，接收所有尝试结束后的最终结果
+
+这两个接口都是可选的，不影响重试、超时、日志或配置热更新。仅通过 7.2 中的最终结果日志进行统计时，不需要配置 Observer。需要使用时，由接入者实现接口，并在服务启动时注册一次：
+
+```go
+type MetricsObserver struct{}
+
+func (MetricsObserver) ObserveRetry(
+	ctx context.Context,
+	event httpclient.RetryEvent,
+) {
+	// 将重试次数、原因、状态码和退避时间写入监控系统。
+}
+
+func (MetricsObserver) ObserveRequestResult(
+	ctx context.Context,
+	event httpclient.RequestResultEvent,
+) {
+	// 将最终状态、耗时、是否超时和是否重试成功写入监控系统。
+}
+
+func initHTTPObserver() {
+	observer := MetricsObserver{}
+	httpclient.SetRetryObserver(observer)
+	httpclient.SetRetryResultObserver(observer)
+}
+```
+
+`SetRetryObserver(...)` 和 `SetRetryResultObserver(...)` 作用于组件默认客户端。使用独立 Client 时，应通过 `ClientOptions.Observer` 和 `ClientOptions.ResultObserver` 在创建 Client 时传入。
+
+`RetryResultObserver` 的最终事件包含 `caller`、`downstream`、`operation`、`class`、尝试次数、状态码和最终原因等字段。
+
+`RetryResultObserver` 和 `HTTPClient request finished` 使用相同的 Transport 级结果语义，不包含辅助函数之后的 JSON/Protobuf 解码耗时或解码错误。
+
+Observer、Skipper、自定义 Resolver 和 Provider 都可能被多个请求并发调用，必须并发安全。这些扩展点为同步回调，不能被 `max_elapsed_time` 强制中断，可能消耗剩余预算或延迟实际返回，不应执行阻塞操作。
+
+组件不直接提供指标后端或链路追踪 SDK。调用方可通过 Observer 接入自己的监控系统。
 
 ## 8. 创建独立 Client（高级）
 
