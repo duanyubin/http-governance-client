@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -24,15 +25,17 @@ var (
 	// ErrUrlNotFound reports an outgoing request without a URL.
 	ErrUrlNotFound = errors.New("request URL not found")
 	bodyLogLevel   atomic.Int64
+	bodyLogLimit   atomic.Int64
 )
 
 const (
-	debugBodyReadLimit      = int64(64 << 10)
+	defaultBodyLogLimit     = int64(64 << 10)
 	retryResponseDrainLimit = int64(64 << 10)
 )
 
 func init() {
 	bodyLogLevel.Store(int64(slog.LevelDebug))
+	bodyLogLimit.Store(defaultBodyLogLimit)
 }
 
 // SkipperFunc reports whether retry governance should be bypassed for a request.
@@ -281,40 +284,46 @@ func (t *Transport) roundTripOnce(req *http.Request, roundTripper http.RoundTrip
 
 	if bodyLogEnabled && req.Body != nil && strings.Contains(requestContentType, "multipart/form-data") {
 		readTime := time.Now()
-		formData := make(map[string]interface{})
-		bodyBytes, replacement, _ := captureDebugBody(req.Body)
+		bodyBytes, replacement, captured := captureBody(req.Body)
 		req.Body = replacement
-		if boundary := t.extractBoundary(req.Header.Get("Content-Type")); boundary != "" {
-			reader := multipart.NewReader(bytes.NewReader(bodyBytes), boundary)
-			for {
-				part, err := reader.NextPart()
-				if err != nil {
-					break
+		if !captured {
+			logBodyContext(ctx, "HTTPClient Request", "Body", "请求体过大或读取失败，跳过打印")
+		} else {
+			formData := make(map[string]interface{})
+			if boundary := t.extractBoundary(req.Header.Get("Content-Type")); boundary != "" {
+				reader := multipart.NewReader(bytes.NewReader(bodyBytes), boundary)
+				for {
+					part, err := reader.NextPart()
+					if err != nil {
+						break
+					}
+					if part.FileName() == "" {
+						value, _ := io.ReadAll(io.LimitReader(part, 1024))
+						formData[part.FormName()] = string(value)
+					} else {
+						formData[part.FormName()] = part.FileName()
+					}
+					part.Close()
 				}
-				if part.FileName() == "" {
-					value, _ := io.ReadAll(io.LimitReader(part, 1024))
-					formData[part.FormName()] = string(value)
-				} else {
-					formData[part.FormName()] = part.FileName()
-				}
-				part.Close()
 			}
+			readLatency := time.Since(readTime)
+			logBodyContext(ctx, "HTTPClient Request", "multipart/form-data", formData, "read-Latency", readLatency.String())
 		}
-		readLatency := time.Since(readTime)
-		logBodyContext(ctx, "HTTPClient Request", "multipart/form-data", formData, "read-Latency", readLatency.String())
 	} else if bodyLogEnabled && req.Body != nil {
-		if !shouldCaptureDebugResponseBody(requestContentType, req.ContentLength) {
+		if req.ContentLength < 0 || !shouldCaptureBody(requestContentType, req.ContentLength) {
 			logBodyContext(ctx, "HTTPClient Request", "Body", "请求体过大或类型未知，跳过打印")
 		} else {
 			var captured bool
 			var reqBody []byte
-			reqBody, req.Body, captured = captureDebugBody(req.Body)
+			reqBody, req.Body, captured = captureBody(req.Body)
 			if !captured {
 				logBodyContext(ctx, "HTTPClient Request", "Body", "请求体过大或读取失败，跳过打印")
-			} else if strings.Contains(requestContentType, "application/json") {
-				var rst map[string]any
+			} else if strings.Contains(strings.ToLower(requestContentType), "json") {
+				var rst any
 				if err := json.Unmarshal(reqBody, &rst); err == nil {
 					logBodyContext(ctx, "HTTPClient Request", "Body", rst)
+				} else {
+					logBodyContext(ctx, "HTTPClient Request", "Body", string(reqBody))
 				}
 			} else {
 				logBodyContext(ctx, "HTTPClient Request", "Body", string(reqBody))
@@ -331,16 +340,18 @@ func (t *Transport) roundTripOnce(req *http.Request, roundTripper http.RoundTrip
 		contentDisposition := resp.Header.Get("Content-Disposition")
 		if strings.Contains(contentDisposition, "attachment") || strings.Contains(responseContentType, "application/octet-stream") {
 			logBodyContext(ctx, "HTTPClient Response", "Body", "文件不打印")
-		} else if shouldCaptureDebugResponseBody(responseContentType, resp.ContentLength) {
+		} else if shouldCaptureBody(responseContentType, resp.ContentLength) {
 			var captured bool
 			var respBody []byte
-			respBody, resp.Body, captured = captureDebugBody(resp.Body)
+			respBody, resp.Body, captured = captureBody(resp.Body)
 			if !captured {
 				logBodyContext(ctx, "HTTPClient Response", "Body", "响应体过大或读取失败，跳过打印")
-			} else if strings.Contains(responseContentType, "application/json") {
-				var rst map[string]any
+			} else if strings.Contains(strings.ToLower(responseContentType), "json") {
+				var rst any
 				if err := json.Unmarshal(respBody, &rst); err == nil {
 					logBodyContext(ctx, "HTTPClient Response", "Body", rst)
+				} else {
+					logBodyContext(ctx, "HTTPClient Response", "Body", string(respBody))
 				}
 			} else {
 				logBodyContext(ctx, "HTTPClient Response", "Body", string(respBody))
@@ -359,9 +370,9 @@ func (t *Transport) roundTripOnce(req *http.Request, roundTripper http.RoundTrip
 	return resp, nil
 }
 
-func shouldCaptureDebugResponseBody(contentType string, contentLength int64) bool {
+func shouldCaptureBody(contentType string, contentLength int64) bool {
 	contentType = strings.ToLower(contentType)
-	if contentLength < 0 || contentLength > debugBodyReadLimit {
+	if contentLength > bodyLogLimitValue() || strings.Contains(contentType, "text/event-stream") {
 		return false
 	}
 	return strings.HasPrefix(contentType, "text/") ||
@@ -371,19 +382,24 @@ func shouldCaptureDebugResponseBody(contentType string, contentLength int64) boo
 		strings.Contains(contentType, "x-www-form-urlencoded")
 }
 
-func captureDebugBody(body io.ReadCloser) ([]byte, io.ReadCloser, bool) {
-	captured, err := io.ReadAll(io.LimitReader(body, debugBodyReadLimit+1))
+func captureBody(body io.ReadCloser) ([]byte, io.ReadCloser, bool) {
+	limit := bodyLogLimitValue()
+	readLimit := limit
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+	captured, err := io.ReadAll(io.LimitReader(body, readLimit))
 	var replay io.Reader
 	switch {
 	case err != nil:
 		replay = io.MultiReader(bytes.NewReader(captured), errorReader{err: err})
-	case int64(len(captured)) > debugBodyReadLimit:
+	case int64(len(captured)) > limit:
 		replay = io.MultiReader(bytes.NewReader(captured), body)
 	default:
 		replay = bytes.NewReader(captured)
 	}
 	replacement := &readerWithCloser{Reader: replay, Closer: body}
-	return captured, replacement, err == nil && int64(len(captured)) <= debugBodyReadLimit
+	return captured, replacement, err == nil && int64(len(captured)) <= limit
 }
 
 type errorReader struct {
@@ -614,6 +630,10 @@ func (t *Transport) extractBoundary(contentType string) string {
 
 func bodyLogLevelValue() slog.Level {
 	return slog.Level(bodyLogLevel.Load())
+}
+
+func bodyLogLimitValue() int64 {
+	return bodyLogLimit.Load()
 }
 
 func bodyLogsEnabled(ctx context.Context) bool {

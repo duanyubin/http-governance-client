@@ -154,6 +154,16 @@ func SetBodyLogLevel(level slog.Level) {
 	bodyLogLevel.Store(int64(level))
 }
 
+// SetBodyLogLimit configures, in bytes, the maximum request or response body
+// size that can be captured for logging. The default is 64 KiB.
+func SetBodyLogLimit(limit int64) error {
+	if limit <= 0 {
+		return fmt.Errorf("body log limit must be greater than zero")
+	}
+	bodyLogLimit.Store(limit)
+	return nil
+}
+
 // SetRetryConfigProvider installs a dynamic retry-config provider on the shared
 // transport.
 func SetRetryConfigProvider(provider RetryConfigProvider) {

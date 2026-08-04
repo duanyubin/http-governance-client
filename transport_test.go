@@ -1483,7 +1483,7 @@ func TestRoundTripSkipsLargeRequestBodyCaptureWhenDebugEnabled(t *testing.T) {
 		SetBodyLogLevel(oldBodyLogLevel)
 	})
 
-	payload := strings.Repeat("a", int(debugBodyReadLimit)+16)
+	payload := strings.Repeat("a", int(defaultBodyLogLimit)+16)
 	trackedBody := &trackingReadCloser{reader: strings.NewReader(payload)}
 	transport := &Transport{
 		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
@@ -1522,6 +1522,75 @@ func TestRoundTripSkipsLargeRequestBodyCaptureWhenDebugEnabled(t *testing.T) {
 	defer resp.Body.Close()
 }
 
+func TestRoundTripDoesNotPreReadUnknownLengthRequestBody(t *testing.T) {
+	setupBodyLogTest(t)
+	payload := `{"request":true}`
+	trackedBody := &trackingReadCloser{reader: strings.NewReader(payload)}
+	transport := &Transport{
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			if got := trackedBody.reads.Load(); got != 0 {
+				t.Fatalf("request body reads before RoundTripper = %d, want 0", got)
+			}
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("ReadAll(req.Body) error = %v", err)
+			}
+			if string(body) != payload {
+				t.Fatalf("request body = %q, want %q", body, payload)
+			}
+			return &stdhttp.Response{
+				StatusCode: stdhttp.StatusOK,
+				Header:     make(stdhttp.Header),
+				Body:       stdhttp.NoBody,
+				Request:    req,
+			}, nil
+		}),
+	}
+	req, err := stdhttp.NewRequestWithContext(context.Background(), stdhttp.MethodPost, "http://example.com/api/test", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	req.Body = trackedBody
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer resp.Body.Close()
+}
+
+func TestRoundTripDoesNotPreReadEventStreamResponse(t *testing.T) {
+	setupBodyLogTest(t)
+	payload := "data: ready\n\n"
+	trackedBody := &trackingReadCloser{reader: strings.NewReader(payload)}
+	transport := &Transport{
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			return &stdhttp.Response{
+				StatusCode:    stdhttp.StatusOK,
+				Header:        stdhttp.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:          trackedBody,
+				ContentLength: -1,
+				Request:       req,
+			}, nil
+		}),
+	}
+	req, err := stdhttp.NewRequestWithContext(context.Background(), stdhttp.MethodGet, "http://example.com/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := trackedBody.reads.Load(); got != 0 {
+		t.Fatalf("event stream reads before caller = %d, want 0", got)
+	}
+}
+
 func TestRoundTripBoundsRequestBodyCaptureWhenContentLengthIsIncorrect(t *testing.T) {
 	oldLogger := slog.Default()
 	oldBodyLogLevel := bodyLogLevelValue()
@@ -1533,12 +1602,12 @@ func TestRoundTripBoundsRequestBodyCaptureWhenContentLengthIsIncorrect(t *testin
 		SetBodyLogLevel(oldBodyLogLevel)
 	})
 
-	payload := strings.Repeat("a", int(debugBodyReadLimit)+128)
+	payload := strings.Repeat("a", int(defaultBodyLogLimit)+128)
 	trackedBody := &trackingReadCloser{reader: strings.NewReader(payload)}
 	transport := &Transport{
 		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
-			if got := trackedBody.bytesRead.Load(); got > debugBodyReadLimit+1 {
-				t.Fatalf("request body reads before RoundTripper = %d, want at most %d", got, debugBodyReadLimit+1)
+			if got := trackedBody.bytesRead.Load(); got > defaultBodyLogLimit+1 {
+				t.Fatalf("request body reads before RoundTripper = %d, want at most %d", got, defaultBodyLogLimit+1)
 			}
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
@@ -1658,6 +1727,58 @@ func TestRoundTripPreservesMultipartRequestBodyReadErrorWhenDebugEnabled(t *test
 	}
 }
 
+func TestRoundTripSkipsPartialMultipartBodyLog(t *testing.T) {
+	handler := setupBodyLogTest(t)
+	oldBodyLogLimit := bodyLogLimitValue()
+	t.Cleanup(func() {
+		if err := SetBodyLogLimit(oldBodyLogLimit); err != nil {
+			t.Fatalf("restore body log limit: %v", err)
+		}
+	})
+	if err := SetBodyLogLimit(16); err != nil {
+		t.Fatalf("SetBodyLogLimit() error = %v", err)
+	}
+
+	payload := strings.Repeat("a", 17)
+	transport := &Transport{
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("ReadAll(req.Body) error = %v", err)
+			}
+			if string(body) != payload {
+				t.Fatalf("request body = %q, want %q", body, payload)
+			}
+			return &stdhttp.Response{
+				StatusCode: stdhttp.StatusOK,
+				Header:     make(stdhttp.Header),
+				Body:       stdhttp.NoBody,
+				Request:    req,
+			}, nil
+		}),
+	}
+	req, err := stdhttp.NewRequestWithContext(context.Background(), stdhttp.MethodPost, "http://example.com/upload", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	req.Body = io.NopCloser(strings.NewReader(payload))
+	req.ContentLength = int64(len(payload))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if _, ok := handler.attrValue("HTTPClient Request", "multipart/form-data"); ok {
+		t.Fatal("partial multipart body must not be logged as complete form data")
+	}
+	if _, ok := handler.attrValue("HTTPClient Request", "Body"); !ok {
+		t.Fatal("multipart body skip log not found")
+	}
+}
+
 func TestRoundTripCanLogBodyAtInfoLevel(t *testing.T) {
 	handler := &captureLogHandler{level: slog.LevelInfo}
 	oldLogger := slog.Default()
@@ -1700,6 +1821,75 @@ func TestRoundTripCanLogBodyAtInfoLevel(t *testing.T) {
 	}
 	if !handler.hasRecord("HTTPClient Response", "Body") {
 		t.Fatal("response body log not found at info level")
+	}
+}
+
+func TestRoundTripLogsResponseBodyWithUnknownOrZeroContentLength(t *testing.T) {
+	for _, contentLength := range []int64{-1, 0} {
+		t.Run(strconv.FormatInt(contentLength, 10), func(t *testing.T) {
+			handler := setupBodyLogTest(t)
+			bodyLog := roundTripResponseBodyLog(t, handler, `{"response":true}`, contentLength)
+			logged, ok := bodyLog.(map[string]any)
+			if !ok || logged["response"] != true {
+				t.Fatalf("response body log = %#v, want decoded response body", bodyLog)
+			}
+		})
+	}
+}
+
+func TestRoundTripLogsNonObjectJSONBody(t *testing.T) {
+	handler := setupBodyLogTest(t)
+	payload := `[{"id":1}]`
+	bodyLog := roundTripResponseBodyLog(t, handler, payload, int64(len(payload)))
+	if logged, ok := bodyLog.([]any); !ok || len(logged) != 1 {
+		t.Fatalf("response body log = %#v, want decoded JSON array", bodyLog)
+	}
+}
+
+func TestRoundTripLogsInvalidJSONBodyAsText(t *testing.T) {
+	handler := setupBodyLogTest(t)
+	payload := `{"incomplete":`
+	bodyLog := roundTripResponseBodyLog(t, handler, payload, int64(len(payload)))
+	if bodyLog != payload {
+		t.Fatalf("response body log = %#v, want %q", bodyLog, payload)
+	}
+}
+
+func TestSetBodyLogLimitAllowsLargerBody(t *testing.T) {
+	handler := setupBodyLogTest(t)
+	oldBodyLogLimit := bodyLogLimitValue()
+	t.Cleanup(func() {
+		if err := SetBodyLogLimit(oldBodyLogLimit); err != nil {
+			t.Fatalf("restore body log limit: %v", err)
+		}
+	})
+
+	payload := `{"value":"` + strings.Repeat("a", int(defaultBodyLogLimit)) + `"}`
+	if err := SetBodyLogLimit(int64(len(payload))); err != nil {
+		t.Fatalf("SetBodyLogLimit() error = %v", err)
+	}
+	bodyLog := roundTripResponseBodyLog(t, handler, payload, int64(len(payload)))
+	logged, ok := bodyLog.(map[string]any)
+	if !ok || logged["value"] != strings.Repeat("a", int(defaultBodyLogLimit)) {
+		t.Fatal("response body log does not contain the complete response")
+	}
+}
+
+func TestSetBodyLogLimitRejectsNonPositiveValues(t *testing.T) {
+	oldBodyLogLimit := bodyLogLimitValue()
+	t.Cleanup(func() {
+		if err := SetBodyLogLimit(oldBodyLogLimit); err != nil {
+			t.Fatalf("restore body log limit: %v", err)
+		}
+	})
+
+	for _, limit := range []int64{0, -1} {
+		if err := SetBodyLogLimit(limit); err == nil {
+			t.Fatalf("SetBodyLogLimit(%d) error = nil, want error", limit)
+		}
+		if got := bodyLogLimitValue(); got != oldBodyLogLimit {
+			t.Fatalf("body log limit = %d after invalid update, want %d", got, oldBodyLogLimit)
+		}
 	}
 }
 
@@ -1983,6 +2173,59 @@ type capturedLogRecord struct {
 	attrs   map[string]any
 }
 
+func setupBodyLogTest(t *testing.T) *captureLogHandler {
+	t.Helper()
+	handler := &captureLogHandler{level: slog.LevelDebug}
+	oldLogger := slog.Default()
+	oldBodyLogLevel := bodyLogLevelValue()
+	slog.SetDefault(slog.New(handler))
+	SetBodyLogLevel(slog.LevelDebug)
+	t.Cleanup(func() {
+		slog.SetDefault(oldLogger)
+		SetBodyLogLevel(oldBodyLogLevel)
+	})
+	return handler
+}
+
+func roundTripResponseBodyLog(t *testing.T, handler *captureLogHandler, payload string, contentLength int64) any {
+	t.Helper()
+	transport := &Transport{
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			return &stdhttp.Response{
+				StatusCode:    stdhttp.StatusOK,
+				Header:        stdhttp.Header{"Content-Type": []string{"application/json"}},
+				Body:          io.NopCloser(strings.NewReader(payload)),
+				ContentLength: contentLength,
+				Request:       req,
+			}, nil
+		}),
+	}
+	req, err := stdhttp.NewRequestWithContext(context.Background(), stdhttp.MethodGet, "http://example.com/api/test", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	if readErr != nil {
+		t.Fatalf("ReadAll(resp.Body) error = %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("resp.Body.Close() error = %v", closeErr)
+	}
+	if string(body) != payload {
+		t.Fatalf("response body = %q, want %q", body, payload)
+	}
+	bodyLog, ok := handler.attrValue("HTTPClient Response", "Body")
+	if !ok {
+		t.Fatal("response body log not found")
+	}
+	return bodyLog
+}
+
 func (h *captureLogHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.level
 }
@@ -2022,6 +2265,21 @@ func (h *captureLogHandler) hasRecord(message, key string) bool {
 		}
 	}
 	return false
+}
+
+func (h *captureLogHandler) attrValue(message, key string) (any, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, record := range h.records {
+		if record.message != message {
+			continue
+		}
+		value, ok := record.attrs[key]
+		if ok {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func (h *captureLogHandler) String() string {
