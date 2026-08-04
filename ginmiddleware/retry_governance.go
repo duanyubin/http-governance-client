@@ -3,7 +3,7 @@ package ginmiddleware
 import (
 	"github.com/gin-gonic/gin"
 
-	governance "github.com/Duanyubin/http-governance-client"
+	governance "github.com/duanyubin/http-governance-client"
 )
 
 // GovernanceMiddleware imports chain-wide retry constraints into Request.Context.

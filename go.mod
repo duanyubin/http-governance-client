@@ -1,4 +1,4 @@
-module github.com/Duanyubin/http-governance-client
+module github.com/duanyubin/http-governance-client
 
 go 1.25.0
 

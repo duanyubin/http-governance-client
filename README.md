@@ -21,13 +21,13 @@
 ## 安装
 
 ```bash
-go get github.com/Duanyubin/http-governance-client
+go get github.com/duanyubin/http-governance-client
 ```
 
 包名为 `http`，建议使用别名导入，避免与标准库冲突：
 
 ```go
-import httpclient "github.com/Duanyubin/http-governance-client"
+import httpclient "github.com/duanyubin/http-governance-client"
 ```
 
 ## 快速开始
@@ -58,7 +58,7 @@ func initHTTP(consulAddress string) error {
 ### 2. Gin 链路约束
 
 ```go
-import ginmiddleware "github.com/Duanyubin/http-governance-client/ginmiddleware"
+import ginmiddleware "github.com/duanyubin/http-governance-client/ginmiddleware"
 
 router.Use(ginmiddleware.GovernanceMiddleware())
 ```
