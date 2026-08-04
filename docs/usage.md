@@ -303,7 +303,7 @@ httpclient.StopRetryConfigAutoReload()
 
 `HTTPClient request finished` 包含完整请求 URL。请求和响应 Header 只在 Debug 级别的详细日志中输出；Body 日志默认也使用 Debug 级别，可通过 `SetBodyLogLevel(...)` 调整。
 
-Body 日志只读取文本、JSON、XML 等可读内容，默认最多读取并记录 64 KiB。普通响应长度未知时，组件会在该上限内读取并恢复 Body，不会仅因 `Content-Length` 缺失而跳过。为避免阻塞流式传输，未知长度的请求体和 `text/event-stream` 响应不会被预读。需要记录更大的完整 Body 时，应在服务初始化阶段设置上限：
+Body 日志支持文本、JSON、XML 和 `application/x-protobuf`，默认最多读取并记录 64 KiB。普通响应长度未知时，组件会在该上限内读取并恢复 Body，不会仅因 `Content-Length` 缺失而跳过。为避免阻塞流式传输，未知长度的请求体和 `text/event-stream` 响应不会被预读。需要记录更大的完整 Body 时，应在服务初始化阶段设置上限：
 
 ```go
 if err := httpclient.SetBodyLogLimit(1024 * 1024); err != nil { // 1 MiB

@@ -378,6 +378,7 @@ func shouldCaptureBody(contentType string, contentLength int64) bool {
 	return strings.HasPrefix(contentType, "text/") ||
 		strings.Contains(contentType, "json") ||
 		strings.Contains(contentType, "xml") ||
+		strings.Contains(contentType, protobufContentType) ||
 		strings.Contains(contentType, "javascript") ||
 		strings.Contains(contentType, "x-www-form-urlencoded")
 }

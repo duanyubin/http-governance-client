@@ -1837,6 +1837,12 @@ func TestRoundTripLogsResponseBodyWithUnknownOrZeroContentLength(t *testing.T) {
 	}
 }
 
+func TestShouldCaptureBodyAllowsProtobuf(t *testing.T) {
+	if !shouldCaptureBody("Application/X-Protobuf", 1) {
+		t.Fatal("protobuf body should be captured")
+	}
+}
+
 func TestRoundTripLogsNonObjectJSONBody(t *testing.T) {
 	handler := setupBodyLogTest(t)
 	payload := `[{"id":1}]`
