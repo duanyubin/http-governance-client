@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-04
+
+### 修复
+
+- 修复 Windows 平台连接被拒绝错误未被识别为可重试传输错误的问题。
+
 ## [0.2.0] - 2026-08-04
 
 ### 变更
@@ -50,6 +56,7 @@
 - 修复独立 Client 的自定义请求分类晚于基础策略解析，以及自定义 Provider 收到未补齐 Scope 的问题。
 - 统一 Host 与 URL Path 的精确匹配和 glob 匹配均不区分大小写，并仅对支持 glob 的 host/path 在配置加载阶段校验语法。
 
-[Unreleased]: https://github.com/duanyubin/http-governance-client/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/duanyubin/http-governance-client/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/duanyubin/http-governance-client/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/duanyubin/http-governance-client/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/duanyubin/http-governance-client/releases/tag/v0.1.0

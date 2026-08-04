@@ -476,7 +476,8 @@ func isRetryableError(err error) bool {
 	if errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.EPIPE) {
+		errors.Is(err, syscall.EPIPE) ||
+		isRetryablePlatformError(err) {
 		return true
 	}
 
