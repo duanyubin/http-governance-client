@@ -264,6 +264,16 @@ func parseSetupArg(args []string, index int) (key, value string, consumedNext bo
 	return strings.TrimSpace(trimmed), next, true
 }
 
+// RequestHeaderSetter adds or overrides headers before a request is sent.
+type RequestHeaderSetter func(request *http.Request) error
+
+func applyRequestHeaderSetter(req *http.Request, setHeaders RequestHeaderSetter) error {
+	if setHeaders == nil {
+		return nil
+	}
+	return setHeaders(req)
+}
+
 // AuthorizationInHeaderSetter adds authorization data to an outgoing request.
 type AuthorizationInHeaderSetter interface {
 	SetAuthorizationInHeader(request *http.Request) error
@@ -387,28 +397,71 @@ func InternalGet(ctx context.Context, url string, expectedPtr any, setAuthorizat
 	return Do(req, expectedPtr)
 }
 
+// SendWithHeaders sends a request with the supplied method after applying setHeaders.
+func SendWithHeaders(ctx context.Context, method, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	r, err := getBodyReader(body)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, r)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", contentType)
+	if err := applyRequestHeaderSetter(req, setHeaders); err != nil {
+		return err
+	}
+
+	return Do(req, expectedPtr)
+}
+
+// PostWithHeaders sends a POST request after applying setHeaders.
+func PostWithHeaders(ctx context.Context, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return SendWithHeaders(ctx, http.MethodPost, url, contentType, body, expectedPtr, setHeaders)
+}
+
+// PutWithHeaders sends a PUT request after applying setHeaders.
+func PutWithHeaders(ctx context.Context, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return SendWithHeaders(ctx, http.MethodPut, url, contentType, body, expectedPtr, setHeaders)
+}
+
+// DeleteWithHeaders sends a DELETE request after applying setHeaders.
+func DeleteWithHeaders(ctx context.Context, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return SendWithHeaders(ctx, http.MethodDelete, url, contentType, body, expectedPtr, setHeaders)
+}
+
 // Post sends a POST request through the shared client.
 func Post(ctx context.Context, url, contentType string, body any, expectedPtr any) error {
-	return InternalWithMethod(ctx, url, http.MethodPost, contentType, body, expectedPtr, nil)
+	return PostWithHeaders(ctx, url, contentType, body, expectedPtr, nil)
 }
 
 // Put sends a PUT request through the shared client.
 func Put(ctx context.Context, url, contentType string, body any, expectedPtr any) error {
-	return InternalWithMethod(ctx, url, http.MethodPut, contentType, body, expectedPtr, nil)
+	return PutWithHeaders(ctx, url, contentType, body, expectedPtr, nil)
 }
 
 // Delete sends a DELETE request through the shared client.
 func Delete(ctx context.Context, url, contentType string, body any, expectedPtr any) error {
-	return InternalWithMethod(ctx, url, http.MethodDelete, contentType, body, expectedPtr, nil)
+	return DeleteWithHeaders(ctx, url, contentType, body, expectedPtr, nil)
 }
 
-// Get sends a GET request through the shared client.
-func Get(ctx context.Context, url string, expectedPtr any) error {
+// GetWithHeaders sends a GET request after applying setHeaders.
+func GetWithHeaders(ctx context.Context, url string, expectedPtr any, setHeaders RequestHeaderSetter) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
+	if err := applyRequestHeaderSetter(req, setHeaders); err != nil {
+		return err
+	}
 	return Do(req, expectedPtr)
+}
+
+// Get sends a GET request through the shared client.
+func Get(ctx context.Context, url string, expectedPtr any) error {
+	return GetWithHeaders(ctx, url, expectedPtr, nil)
 }
 
 // Head sends a HEAD request through the shared client.
