@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 新增 `GetWithHeaders`、`PostWithHeaders` 等统一的函数式请求 Header API。
+
+### 兼容性
+
+- 保留现有 `Internal*` 方法和 `AuthorizationInHeaderSetter`，并复用统一请求实现。
+
 ## [0.4.0] - 2026-08-04
 
 ### 新增

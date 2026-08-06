@@ -122,7 +122,7 @@ router.Use(ginmiddleware.GovernanceMiddleware())
 
 func handler(c *gin.Context) {
 	ctx := c.Request.Context()
-	_ = httpclient.InternalGet(ctx, targetURL, &response, nil)
+	_ = httpclient.Get(ctx, targetURL, &response)
 }
 ```
 

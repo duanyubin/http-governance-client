@@ -4,7 +4,7 @@
 
 ## 1. 初始化方式
 
-普通服务只需在启动时初始化一次组件。之后既可以调用 `InternalGet`、`InternalPost` 等辅助函数，也可以使用标准库创建 `http.Request`，再通过组件默认客户端发送；两种方式都会使用同一份重试配置。
+普通服务只需在启动时初始化一次组件。之后既可以调用 `Get`、`Post`、`GetWithHeaders` 等辅助函数，也可以使用标准库创建 `http.Request`，再通过组件默认客户端发送；两种方式都会使用同一份重试配置。
 
 ### 1.1 显式初始化
 
@@ -93,21 +93,21 @@ Handler 调用下游时必须继续传递标准请求 Context：
 
 ```go
 ctx := c.Request.Context()
-err := httpclient.InternalGet(ctx, targetURL, &response, nil)
+err := httpclient.Get(ctx, targetURL, &response)
 ```
 
 以下写法会丢失链路约束：
 
 ```go
 // 错误：不要替换入站 Context。
-err := httpclient.InternalGet(context.Background(), targetURL, &response, nil)
+err := httpclient.Get(context.Background(), targetURL, &response)
 ```
 
 不要把 `*gin.Context` 作为 `context.Context` 传给组件。
 
 ## 3. 发送请求
 
-### 3.1 快捷辅助函数（可选）
+### 3.1 基础辅助函数（可选）
 
 辅助函数用于减少创建 `http.Request`、发送请求、关闭响应 Body 和解析响应的重复代码。它们都使用组件默认客户端；不使用辅助函数也不影响治理功能。
 
@@ -115,7 +115,7 @@ err := httpclient.InternalGet(context.Background(), targetURL, &response, nil)
 
 ```go
 var response Order
-if err := httpclient.InternalGet(ctx, targetURL, &response, nil); err != nil {
+if err := httpclient.Get(ctx, targetURL, &response); err != nil {
 	return err
 }
 ```
@@ -123,25 +123,92 @@ if err := httpclient.InternalGet(ctx, targetURL, &response, nil); err != nil {
 发送 JSON POST 请求：
 
 ```go
-if err := httpclient.InternalPost(
+if err := httpclient.Post(
 	ctx,
 	targetURL,
 	"application/json",
 	requestBody,
 	&response,
-	nil,
 ); err != nil {
 	return err
 }
 ```
 
-`InternalGet`、`InternalPost`、`InternalPut`、`InternalDelete` 以及对应的 multipart 辅助函数支持在最后一个参数中传入鉴权 Header 设置器；不需要时传 `nil`。不需要设置鉴权 Header 时，也可以使用参数更少的 `Get`、`Post`、`Put`、`Delete`、`Head`、`PostMultipartForm` 和 `PutMultipartForm`。
+不需要额外请求 Header 时，优先使用 `Get`、`Post`、`Put`、`Delete`、`Head`、`PostMultipartForm` 和 `PutMultipartForm`。
 
-`Internal` 是为兼容既有 API 保留的命名，只表示该函数支持调用方设置鉴权 Header，不会强制把请求分类为 internal。具体分类规则见“请求分类与策略匹配维度”。
+### 3.2 设置请求 Header
 
-### 3.2 响应状态
+需要设置 Authorization 或其他业务 Header 时，使用对应的 `*WithHeaders` 方法。所有方法都接收同一种 `RequestHeaderSetter`：
 
-辅助函数返回的 error 表示请求创建、鉴权、传输、超时或响应解码失败。HTTP `4xx/5xx` 本身不会自动产生 error。
+| 请求类型 | 方法 |
+| --- | --- |
+| GET | `GetWithHeaders` |
+| POST / PUT / DELETE | `PostWithHeaders` / `PutWithHeaders` / `DeleteWithHeaders` |
+| 自定义 HTTP 方法 | `SendWithHeaders` |
+| Multipart POST / PUT | `PostMultipartFormWithHeaders` / `PutMultipartFormWithHeaders` |
+| 自定义 Multipart 方法 | `MultipartFormWithHeaders` |
+
+```go
+err := httpclient.PostWithHeaders(
+	ctx,
+	targetURL,
+	"application/json",
+	requestBody,
+	&response,
+	func(req *http.Request) error {
+		req.Header.Set("Authorization", token)
+		req.Header.Set("X-Tenant-ID", tenantID)
+		return nil
+	},
+)
+```
+
+Setter 在请求初次发送前执行一次。Setter 返回错误时，请求不会发送；发生自动重试时复用已设置的 Header，不会再次调用 Setter。
+
+在 Gin Handler 中，应将标准请求 Context 和读取入站 Header 的 Gin Context 分别用于各自职责：
+
+```go
+err := httpclient.GetWithHeaders(
+	c.Request.Context(),
+	targetURL,
+	&response,
+	func(req *http.Request) error {
+		token := c.GetHeader("Authorization")
+		if token != "" {
+			req.Header.Set("Authorization", token)
+		}
+		return nil
+	},
+)
+```
+
+多个调用需要相同鉴权逻辑时，可以在业务项目中封装 Setter 工厂，避免重复闭包：
+
+```go
+func AuthorizationHeaderSetter(c *gin.Context) httpclient.RequestHeaderSetter {
+	return func(req *http.Request) error {
+		token := c.GetHeader("Authorization")
+		if token != "" {
+			req.Header.Set("Authorization", token)
+		}
+		return nil
+	}
+}
+
+setAuthorization := AuthorizationHeaderSetter(c)
+err := httpclient.GetWithHeaders(
+	c.Request.Context(),
+	targetURL,
+	&response,
+	setAuthorization,
+)
+```
+
+组件不依赖 Gin，也不会默认转发所有入站 Header。`InternalGet`、`InternalPost`、`InternalPut`、`InternalDelete` 和对应的 Multipart 方法为已有项目保留，原调用方式继续有效。`Internal` 名称不会影响请求被识别为 internal 或 external；具体分类规则见“请求分类与策略匹配维度”。
+
+### 3.3 响应状态
+
+辅助函数返回的 error 表示请求创建、Header 设置、传输、超时或响应解码失败。HTTP `4xx/5xx` 本身不会自动产生 error。
 
 需要检查状态码时使用 `ResponsePtr`：
 
@@ -149,7 +216,7 @@ if err := httpclient.InternalPost(
 var body ErrorResponse
 result := httpclient.ResponsePtr{ExpectedPtr: &body}
 
-if err := httpclient.InternalGet(ctx, targetURL, &result, nil); err != nil {
+if err := httpclient.Get(ctx, targetURL, &result); err != nil {
 	return err
 }
 if result.StatusCode != http.StatusOK {
@@ -159,13 +226,13 @@ if result.StatusCode != http.StatusOK {
 
 当 `expectedPtr == nil` 时，组件会在有限范围内排空并关闭响应 Body，但不会解析内容。只需要状态码时可以传入空的 `ResponsePtr{}`。
 
-### 3.3 可重放请求体
+### 3.4 可重放请求体
 
 配置允许写请求重试时，请求体必须可重放。组件的 JSON 和 multipart 辅助函数会创建可重放 Body。
 
 直接构造 `http.Request` 时，应使用标准库能够自动生成 `GetBody` 的 Reader，或自行设置 `GetBody`。如果请求包含 Body 且 `GetBody == nil`，组件会关闭该请求的自动重试。
 
-### 3.4 使用标准 `http.Request`
+### 3.5 使用标准 `http.Request`
 
 可以使用标准库的 `http.NewRequestWithContext(...)` 创建请求。治理功能是否生效取决于发送请求时使用的 Client。
 
@@ -390,7 +457,7 @@ Observer、Skipper、自定义 Resolver 和 Provider 都可能被多个请求并
 
 只有在同一进程中需要单独设置整体超时、重试配置、底层 Transport、重定向规则或 CookieJar 时，才需要通过 `NewClientWithOptions(...)` 创建独立的标准库 `*http.Client`。
 
-独立 Client 必须通过标准库的 `client.Do(req)` 发送请求，不会被包级 `InternalGet`、`InternalPost` 等辅助函数使用：
+独立 Client 必须通过标准库的 `client.Do(req)` 发送请求，不会被 `Get`、`Post`、`GetWithHeaders` 等包级辅助函数使用：
 
 ```go
 configData, err := os.ReadFile("retry.yaml")
