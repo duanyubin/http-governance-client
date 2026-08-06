@@ -69,7 +69,7 @@
 ```go
 var body APIResponse
 result := httpclient.ResponsePtr{ExpectedPtr: &body}
-err := httpclient.InternalGet(ctx, targetURL, &result, nil)
+err := httpclient.Get(ctx, targetURL, &result)
 ```
 
 ## 链路约束没有传播

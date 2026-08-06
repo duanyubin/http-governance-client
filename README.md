@@ -67,17 +67,30 @@ Handler 调用下游时传递标准请求 Context：
 
 ```go
 ctx := c.Request.Context()
-err := httpclient.InternalPost(
+err := httpclient.Post(
 	ctx,
 	"http://payments.svc.cluster.local/v1/payments",
 	"application/json",
 	body,
 	&response,
-	nil,
 )
 ```
 
-辅助函数不是必选项。也可以用 `http.NewRequestWithContext(...)` 创建请求，再通过 `httpclient.Do(...)` 或 `httpclient.Instance().Do(...)` 发送；不要改用 `http.DefaultClient`，具体见[接入与使用](docs/usage.md#34-使用标准-httprequest)。
+需要从入站请求读取 Token 或设置其他业务 Header 时，使用对应的 `*WithHeaders` 方法：
+
+```go
+err := httpclient.GetWithHeaders(
+	c.Request.Context(),
+	targetURL,
+	&response,
+	func(req *http.Request) error {
+		req.Header.Set("Authorization", c.GetHeader("Authorization"))
+		return nil
+	},
+)
+```
+
+辅助函数不是必选项。也可以用 `http.NewRequestWithContext(...)` 创建请求，再通过 `httpclient.Do(...)` 或 `httpclient.Instance().Do(...)` 发送；不要改用 `http.DefaultClient`，具体见[接入与使用](docs/usage.md#35-使用标准-httprequest)。
 
 不要传递 `*gin.Context`，也不要用 `context.Background()` 替换入站请求 Context。
 
@@ -89,7 +102,7 @@ err := httpclient.InternalPost(
 var body PaymentResponse
 result := httpclient.ResponsePtr{ExpectedPtr: &body}
 
-if err := httpclient.InternalGet(ctx, targetURL, &result, nil); err != nil {
+if err := httpclient.Get(ctx, targetURL, &result); err != nil {
 	return err // 传输、超时或解码错误
 }
 if result.StatusCode < 200 || result.StatusCode >= 300 {
@@ -103,7 +116,7 @@ if result.StatusCode < 200 || result.StatusCode >= 300 {
 - 写请求默认不自动重试
 - 写请求只有在具备幂等保障后，才应通过精确规则开启重试
 - 带 Body 的请求只有在请求体可重放时才会自动重试
-  - 使用 `InternalPost`、`Post` 等辅助函数时，组件已生成可重放的请求体，无需额外处理
+  - 使用 `Post`、`PostWithHeaders` 等辅助函数时，组件已生成可重放的请求体，无需额外处理
   - 直接创建 `http.Request` 时，`bytes.Buffer`、`bytes.Reader` 和 `strings.Reader` 由标准库自动设置 `GetBody`
   - 使用其他自定义或流式 Body 时，需要自行设置 `GetBody`；未设置时组件会关闭该请求的自动重试，只发送一次
 - HTTP 尝试与退避受 `max_elapsed_time`、请求 Context deadline 和 `X-Request-Deadline` 中最早的截止时间约束

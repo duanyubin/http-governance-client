@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-06
+
+### 新增
+
+- 新增 `GetWithHeaders`、`PostWithHeaders` 等统一的函数式请求 Header API。
+
+### 兼容性
+
+- 保留现有 `Internal*` 方法和 `AuthorizationInHeaderSetter`，并复用统一请求实现。
+
 ## [0.4.0] - 2026-08-04
 
 ### 新增
@@ -72,7 +82,10 @@
 - 修复独立 Client 的自定义请求分类晚于基础策略解析，以及自定义 Provider 收到未补齐 Scope 的问题。
 - 统一 Host 与 URL Path 的精确匹配和 glob 匹配均不区分大小写，并仅对支持 glob 的 host/path 在配置加载阶段校验语法。
 
-[Unreleased]: https://github.com/duanyubin/http-governance-client/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/duanyubin/http-governance-client/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/duanyubin/http-governance-client/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/duanyubin/http-governance-client/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/duanyubin/http-governance-client/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/duanyubin/http-governance-client/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/duanyubin/http-governance-client/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/duanyubin/http-governance-client/releases/tag/v0.1.0

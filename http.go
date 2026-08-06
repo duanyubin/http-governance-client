@@ -264,6 +264,16 @@ func parseSetupArg(args []string, index int) (key, value string, consumedNext bo
 	return strings.TrimSpace(trimmed), next, true
 }
 
+// RequestHeaderSetter adds or overrides headers before a request is sent.
+type RequestHeaderSetter func(request *http.Request) error
+
+func applyRequestHeaderSetter(req *http.Request, setHeaders RequestHeaderSetter) error {
+	if setHeaders == nil {
+		return nil
+	}
+	return setHeaders(req)
+}
+
 // AuthorizationInHeaderSetter adds authorization data to an outgoing request.
 type AuthorizationInHeaderSetter interface {
 	SetAuthorizationInHeader(request *http.Request) error
@@ -280,11 +290,11 @@ func (fn AuthorizationInHeaderSetterFunc) SetAuthorizationInHeader(request *http
 	return fn(request)
 }
 
-func setAuthorizationHeaderIfNeeded(setter AuthorizationInHeaderSetter, req *http.Request) error {
+func legacyRequestHeaderSetter(setter AuthorizationInHeaderSetter) RequestHeaderSetter {
 	if isNilAuthorizationSetter(setter) {
 		return nil
 	}
-	return setter.SetAuthorizationInHeader(req)
+	return setter.SetAuthorizationInHeader
 }
 
 func isNilAuthorizationSetter(setter AuthorizationInHeaderSetter) bool {
@@ -298,6 +308,34 @@ func isNilAuthorizationSetter(setter AuthorizationInHeaderSetter) bool {
 	default:
 		return false
 	}
+}
+
+// MultipartFormWithHeaders sends a multipart request after applying setHeaders.
+func MultipartFormWithHeaders(ctx context.Context, method, url string, mf MultipartFormData, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	body, boundary, err := createMultipart(ctx, mf)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", boundary)
+	if err := applyRequestHeaderSetter(req, setHeaders); err != nil {
+		return err
+	}
+
+	return Do(req, expectedPtr)
+}
+
+// PostMultipartFormWithHeaders sends a multipart POST request after applying setHeaders.
+func PostMultipartFormWithHeaders(ctx context.Context, url string, mf MultipartFormData, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return MultipartFormWithHeaders(ctx, http.MethodPost, url, mf, expectedPtr, setHeaders)
+}
+
+// PutMultipartFormWithHeaders sends a multipart PUT request after applying setHeaders.
+func PutMultipartFormWithHeaders(ctx context.Context, url string, mf MultipartFormData, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return MultipartFormWithHeaders(ctx, http.MethodPut, url, mf, expectedPtr, setHeaders)
 }
 
 // InternalPostMultipartForm sends a multipart POST request with an optional
@@ -315,20 +353,7 @@ func InternalPutMultipartForm(ctx context.Context, url string, mf MultipartFormD
 // InternalMultipartForm sends a multipart request with an optional
 // authorization-header setter through the shared client.
 func InternalMultipartForm(ctx context.Context, method, url string, mf MultipartFormData, expectedPtr any, authorizationInHeaderSetter AuthorizationInHeaderSetter) error {
-	body, boundary, err := createMultipart(ctx, mf)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", boundary)
-	if err := setAuthorizationHeaderIfNeeded(authorizationInHeaderSetter, req); err != nil {
-		return err
-	}
-
-	return Do(req, expectedPtr)
+	return MultipartFormWithHeaders(ctx, method, url, mf, expectedPtr, legacyRequestHeaderSetter(authorizationInHeaderSetter))
 }
 
 // InternalPost sends a POST request with an optional authorization-header
@@ -352,6 +377,17 @@ func InternalDelete(ctx context.Context, url, contentType string, body any, expe
 // InternalWithMethod sends a request with the supplied HTTP method and an
 // optional authorization-header setter through the shared client.
 func InternalWithMethod(ctx context.Context, url, method, contentType string, body any, expectedPtr any, authorizationInHeaderSetter AuthorizationInHeaderSetter) error {
+	return SendWithHeaders(ctx, method, url, contentType, body, expectedPtr, legacyRequestHeaderSetter(authorizationInHeaderSetter))
+}
+
+// InternalGet sends a GET request with an optional authorization-header setter
+// through the shared client.
+func InternalGet(ctx context.Context, url string, expectedPtr any, setAuthorizationInHeader func(request *http.Request) error) error {
+	return GetWithHeaders(ctx, url, expectedPtr, RequestHeaderSetter(setAuthorizationInHeader))
+}
+
+// SendWithHeaders sends a request with the supplied method after applying setHeaders.
+func SendWithHeaders(ctx context.Context, method, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
 	r, err := getBodyReader(body)
 	if err != nil {
 		return err
@@ -363,52 +399,58 @@ func InternalWithMethod(ctx context.Context, url, method, contentType string, bo
 	}
 
 	req.Header.Set("Content-Type", contentType)
-
-	if err := setAuthorizationHeaderIfNeeded(authorizationInHeaderSetter, req); err != nil {
+	if err := applyRequestHeaderSetter(req, setHeaders); err != nil {
 		return err
 	}
 
 	return Do(req, expectedPtr)
 }
 
-// InternalGet sends a GET request with an optional authorization-header setter
-// through the shared client.
-func InternalGet(ctx context.Context, url string, expectedPtr any, setAuthorizationInHeader func(request *http.Request) error) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
+// PostWithHeaders sends a POST request after applying setHeaders.
+func PostWithHeaders(ctx context.Context, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return SendWithHeaders(ctx, http.MethodPost, url, contentType, body, expectedPtr, setHeaders)
+}
 
-	if setAuthorizationInHeader != nil {
-		if err := setAuthorizationInHeader(req); err != nil {
-			return err
-		}
-	}
-	return Do(req, expectedPtr)
+// PutWithHeaders sends a PUT request after applying setHeaders.
+func PutWithHeaders(ctx context.Context, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return SendWithHeaders(ctx, http.MethodPut, url, contentType, body, expectedPtr, setHeaders)
+}
+
+// DeleteWithHeaders sends a DELETE request after applying setHeaders.
+func DeleteWithHeaders(ctx context.Context, url, contentType string, body any, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return SendWithHeaders(ctx, http.MethodDelete, url, contentType, body, expectedPtr, setHeaders)
 }
 
 // Post sends a POST request through the shared client.
 func Post(ctx context.Context, url, contentType string, body any, expectedPtr any) error {
-	return InternalWithMethod(ctx, url, http.MethodPost, contentType, body, expectedPtr, nil)
+	return PostWithHeaders(ctx, url, contentType, body, expectedPtr, nil)
 }
 
 // Put sends a PUT request through the shared client.
 func Put(ctx context.Context, url, contentType string, body any, expectedPtr any) error {
-	return InternalWithMethod(ctx, url, http.MethodPut, contentType, body, expectedPtr, nil)
+	return PutWithHeaders(ctx, url, contentType, body, expectedPtr, nil)
 }
 
 // Delete sends a DELETE request through the shared client.
 func Delete(ctx context.Context, url, contentType string, body any, expectedPtr any) error {
-	return InternalWithMethod(ctx, url, http.MethodDelete, contentType, body, expectedPtr, nil)
+	return DeleteWithHeaders(ctx, url, contentType, body, expectedPtr, nil)
 }
 
-// Get sends a GET request through the shared client.
-func Get(ctx context.Context, url string, expectedPtr any) error {
+// GetWithHeaders sends a GET request after applying setHeaders.
+func GetWithHeaders(ctx context.Context, url string, expectedPtr any, setHeaders RequestHeaderSetter) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
+	if err := applyRequestHeaderSetter(req, setHeaders); err != nil {
+		return err
+	}
 	return Do(req, expectedPtr)
+}
+
+// Get sends a GET request through the shared client.
+func Get(ctx context.Context, url string, expectedPtr any) error {
+	return GetWithHeaders(ctx, url, expectedPtr, nil)
 }
 
 // Head sends a HEAD request through the shared client.
@@ -422,12 +464,12 @@ func Head(ctx context.Context, url string, expectedPtr any) error {
 
 // PostMultipartForm sends a multipart POST request through the shared client.
 func PostMultipartForm(ctx context.Context, url string, mf MultipartFormData, expectedPtr any) error {
-	return InternalMultipartForm(ctx, http.MethodPost, url, mf, expectedPtr, nil)
+	return PostMultipartFormWithHeaders(ctx, url, mf, expectedPtr, nil)
 }
 
 // PutMultipartForm sends a multipart PUT request through the shared client.
 func PutMultipartForm(ctx context.Context, url string, mf MultipartFormData, expectedPtr any) error {
-	return InternalMultipartForm(ctx, http.MethodPut, url, mf, expectedPtr, nil)
+	return PutMultipartFormWithHeaders(ctx, url, mf, expectedPtr, nil)
 }
 
 func createMultipart(ctx context.Context, mf MultipartFormData) (*bytes.Buffer, string, error) {
