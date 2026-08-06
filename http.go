@@ -290,13 +290,6 @@ func (fn AuthorizationInHeaderSetterFunc) SetAuthorizationInHeader(request *http
 	return fn(request)
 }
 
-func setAuthorizationHeaderIfNeeded(setter AuthorizationInHeaderSetter, req *http.Request) error {
-	if isNilAuthorizationSetter(setter) {
-		return nil
-	}
-	return setter.SetAuthorizationInHeader(req)
-}
-
 func legacyRequestHeaderSetter(setter AuthorizationInHeaderSetter) RequestHeaderSetter {
 	if isNilAuthorizationSetter(setter) {
 		return nil
@@ -317,6 +310,34 @@ func isNilAuthorizationSetter(setter AuthorizationInHeaderSetter) bool {
 	}
 }
 
+// MultipartFormWithHeaders sends a multipart request after applying setHeaders.
+func MultipartFormWithHeaders(ctx context.Context, method, url string, mf MultipartFormData, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	body, boundary, err := createMultipart(ctx, mf)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", boundary)
+	if err := applyRequestHeaderSetter(req, setHeaders); err != nil {
+		return err
+	}
+
+	return Do(req, expectedPtr)
+}
+
+// PostMultipartFormWithHeaders sends a multipart POST request after applying setHeaders.
+func PostMultipartFormWithHeaders(ctx context.Context, url string, mf MultipartFormData, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return MultipartFormWithHeaders(ctx, http.MethodPost, url, mf, expectedPtr, setHeaders)
+}
+
+// PutMultipartFormWithHeaders sends a multipart PUT request after applying setHeaders.
+func PutMultipartFormWithHeaders(ctx context.Context, url string, mf MultipartFormData, expectedPtr any, setHeaders RequestHeaderSetter) error {
+	return MultipartFormWithHeaders(ctx, http.MethodPut, url, mf, expectedPtr, setHeaders)
+}
+
 // InternalPostMultipartForm sends a multipart POST request with an optional
 // authorization-header setter through the shared client.
 func InternalPostMultipartForm(ctx context.Context, url string, mf MultipartFormData, expectedPtr any, authorizationInHeaderSetter AuthorizationInHeaderSetter) error {
@@ -332,20 +353,7 @@ func InternalPutMultipartForm(ctx context.Context, url string, mf MultipartFormD
 // InternalMultipartForm sends a multipart request with an optional
 // authorization-header setter through the shared client.
 func InternalMultipartForm(ctx context.Context, method, url string, mf MultipartFormData, expectedPtr any, authorizationInHeaderSetter AuthorizationInHeaderSetter) error {
-	body, boundary, err := createMultipart(ctx, mf)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", boundary)
-	if err := setAuthorizationHeaderIfNeeded(authorizationInHeaderSetter, req); err != nil {
-		return err
-	}
-
-	return Do(req, expectedPtr)
+	return MultipartFormWithHeaders(ctx, method, url, mf, expectedPtr, legacyRequestHeaderSetter(authorizationInHeaderSetter))
 }
 
 // InternalPost sends a POST request with an optional authorization-header
@@ -456,12 +464,12 @@ func Head(ctx context.Context, url string, expectedPtr any) error {
 
 // PostMultipartForm sends a multipart POST request through the shared client.
 func PostMultipartForm(ctx context.Context, url string, mf MultipartFormData, expectedPtr any) error {
-	return InternalMultipartForm(ctx, http.MethodPost, url, mf, expectedPtr, nil)
+	return PostMultipartFormWithHeaders(ctx, url, mf, expectedPtr, nil)
 }
 
 // PutMultipartForm sends a multipart PUT request through the shared client.
 func PutMultipartForm(ctx context.Context, url string, mf MultipartFormData, expectedPtr any) error {
-	return InternalMultipartForm(ctx, http.MethodPut, url, mf, expectedPtr, nil)
+	return PutMultipartFormWithHeaders(ctx, url, mf, expectedPtr, nil)
 }
 
 func createMultipart(ctx context.Context, mf MultipartFormData) (*bytes.Buffer, string, error) {

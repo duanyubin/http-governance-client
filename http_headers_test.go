@@ -208,3 +208,68 @@ func TestLegacyInternalHelpersApplyHeaderSetters(t *testing.T) {
 		})
 	}
 }
+
+func TestMultipartMethodsWithHeadersApplySetter(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		call   func(context.Context, string, MultipartFormData, RequestHeaderSetter) error
+	}{
+		{
+			name:   "post",
+			method: stdhttp.MethodPost,
+			call: func(ctx context.Context, url string, form MultipartFormData, setter RequestHeaderSetter) error {
+				return PostMultipartFormWithHeaders(ctx, url, form, nil, setter)
+			},
+		},
+		{
+			name:   "put",
+			method: stdhttp.MethodPut,
+			call: func(ctx context.Context, url string, form MultipartFormData, setter RequestHeaderSetter) error {
+				return PutMultipartFormWithHeaders(ctx, url, form, nil, setter)
+			},
+		},
+		{
+			name:   "custom method",
+			method: stdhttp.MethodPatch,
+			call: func(ctx context.Context, url string, form MultipartFormData, setter RequestHeaderSetter) error {
+				return MultipartFormWithHeaders(ctx, stdhttp.MethodPatch, url, form, nil, setter)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+				if r.Method != tt.method {
+					t.Errorf("method = %q, want %q", r.Method, tt.method)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer multipart" {
+					t.Errorf("Authorization = %q", got)
+				}
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Fatalf("ParseMultipartForm() error = %v", err)
+				}
+				if got := r.FormValue("name"); got != "tester" {
+					t.Errorf("name = %q", got)
+				}
+				w.WriteHeader(stdhttp.StatusNoContent)
+			}))
+			defer server.Close()
+
+			form := MultipartFormData{Form: struct {
+				Name string `form:"name"`
+			}{Name: "tester"}}
+			err := tt.call(context.Background(), server.URL, form, func(req *stdhttp.Request) error {
+				if got := req.Header.Get("Content-Type"); got == "" {
+					t.Error("setter observed an empty Content-Type")
+				}
+				req.Header.Set("Authorization", "Bearer multipart")
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("request error = %v", err)
+			}
+		})
+	}
+}
