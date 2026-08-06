@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-06
+
+### 修复
+
+- 修复请求未设置 `Content-Type` 时，小请求体无法打印日志的问题。
+
 ## [0.5.0] - 2026-08-06
 
 ### 新增
@@ -82,7 +88,8 @@
 - 修复独立 Client 的自定义请求分类晚于基础策略解析，以及自定义 Provider 收到未补齐 Scope 的问题。
 - 统一 Host 与 URL Path 的精确匹配和 glob 匹配均不区分大小写，并仅对支持 glob 的 host/path 在配置加载阶段校验语法。
 
-[Unreleased]: https://github.com/duanyubin/http-governance-client/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/duanyubin/http-governance-client/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/duanyubin/http-governance-client/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/duanyubin/http-governance-client/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/duanyubin/http-governance-client/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/duanyubin/http-governance-client/compare/v0.2.1...v0.3.0

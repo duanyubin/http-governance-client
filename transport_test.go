@@ -1561,6 +1561,46 @@ func TestRoundTripDoesNotPreReadUnknownLengthRequestBody(t *testing.T) {
 	defer resp.Body.Close()
 }
 
+func TestRoundTripLogsRequestBodyWithoutContentType(t *testing.T) {
+	handler := setupBodyLogTest(t)
+	payload := `{"request":true}`
+	transport := &Transport{
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("ReadAll(req.Body) error = %v", err)
+			}
+			if string(body) != payload {
+				t.Fatalf("request body = %q, want %q", body, payload)
+			}
+			return &stdhttp.Response{
+				StatusCode: stdhttp.StatusOK,
+				Header:     make(stdhttp.Header),
+				Body:       stdhttp.NoBody,
+				Request:    req,
+			}, nil
+		}),
+	}
+	req, err := stdhttp.NewRequestWithContext(context.Background(), stdhttp.MethodPost, "http://example.com/api/test", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyLog, ok := handler.attrValue("HTTPClient Request", "Body")
+	if !ok {
+		t.Fatal("request body log not found")
+	}
+	if bodyLog != payload {
+		t.Fatalf("request body log = %#v, want %q", bodyLog, payload)
+	}
+}
+
 func TestRoundTripDoesNotPreReadEventStreamResponse(t *testing.T) {
 	setupBodyLogTest(t)
 	payload := "data: ready\n\n"

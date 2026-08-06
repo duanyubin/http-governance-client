@@ -310,7 +310,7 @@ func (t *Transport) roundTripOnce(req *http.Request, roundTripper http.RoundTrip
 			logBodyContext(ctx, "HTTPClient Request", "multipart/form-data", formData, "read-Latency", readLatency.String())
 		}
 	} else if bodyLogEnabled && req.Body != nil {
-		if req.ContentLength < 0 || !shouldCaptureBody(requestContentType, req.ContentLength) {
+		if req.ContentLength < 0 || (requestContentType != "" && !shouldCaptureBody(requestContentType, req.ContentLength)) {
 			logBodyContext(ctx, "HTTPClient Request", "Body", "请求体过大或类型未知，跳过打印")
 		} else {
 			var captured bool
