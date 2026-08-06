@@ -156,3 +156,55 @@ func TestGetWithHeadersCallsSetterOnceWhenRetried(t *testing.T) {
 		t.Fatalf("setter calls = %d, want 1", got)
 	}
 }
+
+func TestLegacyInternalHelpersApplyHeaderSetters(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		call func(string) error
+	}{
+		{
+			name: "get function setter",
+			want: "legacy-get",
+			call: func(url string) error {
+				return InternalGet(context.Background(), url, nil, func(req *stdhttp.Request) error {
+					req.Header.Set("X-Test", "legacy-get")
+					return nil
+				})
+			},
+		},
+		{
+			name: "post interface setter",
+			want: "legacy-post",
+			call: func(url string) error {
+				return InternalPost(
+					context.Background(),
+					url,
+					"application/json",
+					map[string]bool{"ok": true},
+					nil,
+					AuthorizationInHeaderSetterFunc(func(req *stdhttp.Request) error {
+						req.Header.Set("X-Test", "legacy-post")
+						return nil
+					}),
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+				if got := r.Header.Get("X-Test"); got != tt.want {
+					t.Errorf("X-Test = %q, want %q", got, tt.want)
+				}
+				w.WriteHeader(stdhttp.StatusNoContent)
+			}))
+			defer server.Close()
+
+			if err := tt.call(server.URL); err != nil {
+				t.Fatalf("request error = %v", err)
+			}
+		})
+	}
+}

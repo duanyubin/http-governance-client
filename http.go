@@ -297,6 +297,13 @@ func setAuthorizationHeaderIfNeeded(setter AuthorizationInHeaderSetter, req *htt
 	return setter.SetAuthorizationInHeader(req)
 }
 
+func legacyRequestHeaderSetter(setter AuthorizationInHeaderSetter) RequestHeaderSetter {
+	if isNilAuthorizationSetter(setter) {
+		return nil
+	}
+	return setter.SetAuthorizationInHeader
+}
+
 func isNilAuthorizationSetter(setter AuthorizationInHeaderSetter) bool {
 	if setter == nil {
 		return true
@@ -362,39 +369,13 @@ func InternalDelete(ctx context.Context, url, contentType string, body any, expe
 // InternalWithMethod sends a request with the supplied HTTP method and an
 // optional authorization-header setter through the shared client.
 func InternalWithMethod(ctx context.Context, url, method, contentType string, body any, expectedPtr any, authorizationInHeaderSetter AuthorizationInHeaderSetter) error {
-	r, err := getBodyReader(body)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, r)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", contentType)
-
-	if err := setAuthorizationHeaderIfNeeded(authorizationInHeaderSetter, req); err != nil {
-		return err
-	}
-
-	return Do(req, expectedPtr)
+	return SendWithHeaders(ctx, method, url, contentType, body, expectedPtr, legacyRequestHeaderSetter(authorizationInHeaderSetter))
 }
 
 // InternalGet sends a GET request with an optional authorization-header setter
 // through the shared client.
 func InternalGet(ctx context.Context, url string, expectedPtr any, setAuthorizationInHeader func(request *http.Request) error) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-
-	if setAuthorizationInHeader != nil {
-		if err := setAuthorizationInHeader(req); err != nil {
-			return err
-		}
-	}
-	return Do(req, expectedPtr)
+	return GetWithHeaders(ctx, url, expectedPtr, RequestHeaderSetter(setAuthorizationInHeader))
 }
 
 // SendWithHeaders sends a request with the supplied method after applying setHeaders.
