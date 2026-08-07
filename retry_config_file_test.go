@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	stdhttp "net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,10 +19,10 @@ rules:
   - name: disable-query-order
     priority: 100
     match:
-      caller: ["shop"]
-      downstream: ["billing"]
-      operation: ["queryOrder"]
-      class: ["internal_read"]
+      callers: ["shop"]
+      downstreams: ["billing"]
+      operations: ["queryOrder"]
+      classes: ["internal_read"]
     policy:
       disable_retry: true
 `)
@@ -86,7 +87,7 @@ func TestManagedRetryConfigProviderRejectsUnknownYAMLFields(t *testing.T) {
 		},
 		{
 			name: "misspelled match",
-			data: "version: v1\nrules:\n  - macth:\n      method: [GET]\n    policy:\n      max_retries: 1\n",
+			data: "version: v1\nrules:\n  - macth:\n      methods: [GET]\n    policy:\n      max_retries: 1\n",
 		},
 	}
 
@@ -95,6 +96,62 @@ func TestManagedRetryConfigProviderRejectsUnknownYAMLFields(t *testing.T) {
 			_, err := NewManagedRetryConfigProviderFromYAML([]byte(tt.data))
 			if err == nil {
 				t.Fatal("NewManagedRetryConfigProviderFromYAML() error = nil, want unknown field error")
+			}
+		})
+	}
+}
+
+func TestManagedRetryConfigProviderAcceptsPluralMatchFields(t *testing.T) {
+	provider, err := NewManagedRetryConfigProviderFromYAML([]byte(`
+version: v1
+rules:
+  - name: retry-balance-query
+    match:
+      callers: ["shop"]
+      downstreams: ["billing"]
+      operations: ["queryBalance"]
+      methods: ["POST"]
+      hosts: ["billing:7308"]
+      paths: ["/billing/*"]
+      classes: ["internal_write"]
+    policy:
+      max_retries: 2
+`))
+	if err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+
+	base := RetryPolicy{MaxRetries: 0}
+	scope := RetryConfigScope{
+		Caller:     "shop",
+		Downstream: "billing",
+		Operation:  "queryBalance",
+		Method:     stdhttp.MethodPost,
+		Host:       "billing:7308",
+		Path:       "/billing/account",
+		Class:      RequestClassInternalWrite,
+	}
+	if got := provider.ResolveRetryPolicy(context.Background(), scope, base).MaxRetries; got != 2 {
+		t.Fatalf("MaxRetries = %d, want 2", got)
+	}
+}
+
+func TestManagedRetryConfigProviderRejectsSingularMatchFields(t *testing.T) {
+	fields := map[string]string{
+		"caller":     "shop",
+		"downstream": "billing",
+		"operation":  "queryBalance",
+		"method":     "POST",
+		"host":       "billing:7308",
+		"path":       "/billing/*",
+		"class":      "internal_write",
+	}
+	for field, value := range fields {
+		t.Run(field, func(t *testing.T) {
+			data := []byte("version: v1\nrules:\n  - match:\n      " + field + ": ['" + value + "']\n    policy:\n      max_retries: 1\n")
+			_, err := NewManagedRetryConfigProviderFromYAML(data)
+			if err == nil || !strings.Contains(err.Error(), "field "+field+" not found") {
+				t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v, want unknown %q field error", err, field)
 			}
 		})
 	}
@@ -119,7 +176,7 @@ func TestManagedRetryConfigProviderRejectsInvalidGlobPatterns(t *testing.T) {
 		},
 		{
 			name: "rule path",
-			data: "version: v1\nrules:\n  - name: queryPayment\n    match:\n      path: ['[']\n    policy:\n      max_retries: 1\n",
+			data: "version: v1\nrules:\n  - name: queryPayment\n    match:\n      paths: ['[']\n    policy:\n      max_retries: 1\n",
 		},
 	}
 
@@ -140,22 +197,22 @@ func TestManagedRetryConfigProviderTreatsNonHostPathValuesAsExact(t *testing.T) 
 	}{
 		{
 			name:  "caller",
-			match: "caller: ['orders-*']",
+			match: "callers: ['orders-*']",
 			scope: RetryConfigScope{Caller: "orders-api"},
 		},
 		{
 			name:  "downstream",
-			match: "downstream: ['pay*']",
+			match: "downstreams: ['pay*']",
 			scope: RetryConfigScope{Downstream: "payments"},
 		},
 		{
 			name:  "operation",
-			match: "operation: ['query*']",
+			match: "operations: ['query*']",
 			scope: RetryConfigScope{Operation: "queryPayment"},
 		},
 		{
 			name:  "method",
-			match: "method: ['G*']",
+			match: "methods: ['G*']",
 			scope: RetryConfigScope{Method: stdhttp.MethodGet},
 		},
 	}
@@ -181,7 +238,7 @@ version: v1
 rules:
   - name: exact-caller
     match:
-      caller: ["["]
+      callers: ["["]
     policy:
       max_retries: 3
 `))
@@ -235,7 +292,7 @@ version: v1
 rules:
   - name: unsafe-global-write-retry
     match:
-      method: [" "]
+      methods: [" "]
     policy:
       max_retries: 1
 `))
@@ -250,7 +307,7 @@ version: v1
 rules:
   - name: no-op-rule
     match:
-      method: ["GET"]
+      methods: ["GET"]
 `))
 	if err == nil {
 		t.Fatal("NewManagedRetryConfigProviderFromYAML() error = nil, want empty policy error")
@@ -355,12 +412,12 @@ version: v1
 rules:
   - name: order-rule
     match:
-      method: ["GET"]
+      methods: ["GET"]
     policy:
       max_retries: 1
   - name: order-rule
     match:
-      method: ["POST"]
+      methods: ["POST"]
     policy:
       max_retries: 1
 `,
@@ -483,8 +540,8 @@ func TestManagedRetryConfigProviderUpdateHotReload(t *testing.T) {
 				Name:     "disable-profile",
 				Priority: 100,
 				Match: RetryConfigMatchFile{
-					Operation: []string{"readProfile"},
-					Class:     []string{"internal_read"},
+					Operations: []string{"readProfile"},
+					Classes:    []string{"internal_read"},
 				},
 				Policy: RetryPolicyPatchFile{
 					DisableRetry: boolPtr(true),
@@ -508,8 +565,8 @@ func TestManagedRetryConfigProviderUpdateHotReload(t *testing.T) {
 				Name:     "enable-profile-retry",
 				Priority: 100,
 				Match: RetryConfigMatchFile{
-					Operation: []string{"readProfile"},
-					Class:     []string{"internal_read"},
+					Operations: []string{"readProfile"},
+					Classes:    []string{"internal_read"},
 				},
 				Policy: RetryPolicyPatchFile{
 					MaxRetries:      intPtr(2),
@@ -544,10 +601,10 @@ func TestManagedRetryConfigProviderRulePriorityDisabledAndPathMatch(t *testing.T
 				Priority: 200,
 				Disabled: true,
 				Match: RetryConfigMatchFile{
-					Method: []string{"GET"},
-					Host:   []string{"api.example.com"},
-					Path:   []string{"/v1/orders/*"},
-					Class:  []string{"external_read"},
+					Methods: []string{"GET"},
+					Hosts:   []string{"api.example.com"},
+					Paths:   []string{"/v1/orders/*"},
+					Classes: []string{"external_read"},
 				},
 				Policy: RetryPolicyPatchFile{
 					MaxRetries: intPtr(9),
@@ -557,10 +614,10 @@ func TestManagedRetryConfigProviderRulePriorityDisabledAndPathMatch(t *testing.T
 				Name:     "lower-priority",
 				Priority: 80,
 				Match: RetryConfigMatchFile{
-					Method: []string{"GET"},
-					Host:   []string{"api.example.com"},
-					Path:   []string{"/v1/orders/*"},
-					Class:  []string{"external_read"},
+					Methods: []string{"GET"},
+					Hosts:   []string{"api.example.com"},
+					Paths:   []string{"/v1/orders/*"},
+					Classes: []string{"external_read"},
 				},
 				Policy: RetryPolicyPatchFile{
 					MaxRetries: intPtr(1),
@@ -570,10 +627,10 @@ func TestManagedRetryConfigProviderRulePriorityDisabledAndPathMatch(t *testing.T
 				Name:     "higher-priority",
 				Priority: 100,
 				Match: RetryConfigMatchFile{
-					Method: []string{"GET"},
-					Host:   []string{"api.example.com"},
-					Path:   []string{"/v1/orders/*"},
-					Class:  []string{"external_read"},
+					Methods: []string{"GET"},
+					Hosts:   []string{"api.example.com"},
+					Paths:   []string{"/v1/orders/*"},
+					Classes: []string{"external_read"},
 				},
 				Policy: RetryPolicyPatchFile{
 					MaxRetries: intPtr(2),
@@ -609,7 +666,7 @@ version: v1
 rules:
   - name: exact-path
     match:
-      path: ["/v1/orders"]
+      paths: ["/v1/orders"]
     policy:
       max_retries: 3
 `))

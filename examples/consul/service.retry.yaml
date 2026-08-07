@@ -22,11 +22,11 @@ rules:
   - name: "retry-idempotent-payment-create"
     priority: 120
     match:
-      caller: ["orders-api"]
-      downstream: ["payments"]
-      operation: ["createPayment"]
-      method: ["POST"]
-      class: ["internal_write"]
+      callers: ["orders-api"]
+      downstreams: ["payments"]
+      operations: ["createPayment"]
+      methods: ["POST"]
+      classes: ["internal_write"]
     policy:
       max_retries: 1
       max_elapsed_time: 3s
@@ -36,9 +36,9 @@ rules:
   - name: "limit-fraud-api-retries"
     priority: 110
     match:
-      caller: ["orders-api"]
-      downstream: ["fraud-api"]
-      class: ["external_read"]
+      callers: ["orders-api"]
+      downstreams: ["fraud-api"]
+      classes: ["external_read"]
     policy:
       max_retries: 1
       per_attempt_timeout: 2s

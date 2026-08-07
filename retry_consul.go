@@ -669,13 +669,13 @@ func cloneRetryPolicyPatchFilePtr(item *RetryPolicyPatchFile) *RetryPolicyPatchF
 func cloneRetryConfigRuleFile(item RetryConfigRuleFile) RetryConfigRuleFile {
 	cloned := item
 	cloned.Match = RetryConfigMatchFile{
-		Caller:     append([]string(nil), item.Match.Caller...),
-		Downstream: append([]string(nil), item.Match.Downstream...),
-		Operation:  append([]string(nil), item.Match.Operation...),
-		Method:     append([]string(nil), item.Match.Method...),
-		Host:       append([]string(nil), item.Match.Host...),
-		Path:       append([]string(nil), item.Match.Path...),
-		Class:      append([]string(nil), item.Match.Class...),
+		Callers:     append([]string(nil), item.Match.Callers...),
+		Downstreams: append([]string(nil), item.Match.Downstreams...),
+		Operations:  append([]string(nil), item.Match.Operations...),
+		Methods:     append([]string(nil), item.Match.Methods...),
+		Hosts:       append([]string(nil), item.Match.Hosts...),
+		Paths:       append([]string(nil), item.Match.Paths...),
+		Classes:     append([]string(nil), item.Match.Classes...),
 	}
 	cloned.Policy = RetryPolicyPatchFile{
 		DisableRetry:      item.Policy.DisableRetry,

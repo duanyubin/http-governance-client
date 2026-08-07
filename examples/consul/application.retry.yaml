@@ -51,6 +51,6 @@ rules:
   - name: "disable-write-retries"
     priority: 80
     match:
-      class: ["internal_write", "external_write"]
+      classes: ["internal_write", "external_write"]
     policy:
       disable_retry: true

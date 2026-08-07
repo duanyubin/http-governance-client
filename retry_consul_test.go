@@ -279,7 +279,7 @@ rules:
   - name: "common-internal-read"
     priority: 10
     match:
-      class: ["internal_read"]
+      classes: ["internal_read"]
     policy:
       initial_backoff: 100ms
 `),
@@ -305,9 +305,9 @@ rules:
   - name: "shop-query-order"
     priority: 100
     match:
-      caller: ["shop"]
-      downstream: ["billing"]
-      class: ["internal_read"]
+      callers: ["shop"]
+      downstreams: ["billing"]
+      classes: ["internal_read"]
     policy:
       max_retries: 3
 `),

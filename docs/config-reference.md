@@ -52,15 +52,15 @@ rules:
   - name: "disable-payment-query-retry"
     priority: 100
     match:
-      caller: ["orders-api"]
-      downstream: ["payments"]
-      operation: ["queryPayment"]
-      class: ["internal_read"]
+      callers: ["orders-api"]
+      downstreams: ["payments"]
+      operations: ["queryPayment"]
+      classes: ["internal_read"]
     policy:
       disable_retry: true
 ```
 
-YAML 使用严格字段校验，并且一份配置只能包含一个 YAML 文档。字段拼写错误、host/path 中的无效 glob 或追加第二个 `---` 文档都会导致整份配置加载失败。
+YAML 使用严格字段校验，并且一份配置只能包含一个 YAML 文档。字段拼写错误、`hosts`/`paths` 中的无效 glob 或追加第二个 `---` 文档都会导致整份配置加载失败。
 
 ## 3. 顶层字段
 
@@ -205,19 +205,19 @@ operations:
 | `match` | `object` | 启用时是 | 至少包含一个有效匹配值 |
 | `policy` | `object` | 启用时是 | 至少覆盖一个策略字段 |
 
-`match` 支持：
+`match` 支持以下字段。各字段均可省略，但启用的规则必须至少包含一个有效匹配值；空数组和仅包含空白字符串的数组不计为有效值。
 
-| 字段 | 类型 |
-| --- | --- |
-| `caller` | `[]string` |
-| `downstream` | `[]string` |
-| `operation` | `[]string` |
-| `method` | `[]string` |
-| `host` | `[]string` |
-| `path` | `[]string` |
-| `class` | `[]string` |
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `callers` | `[]string` | 否 | 调用方服务名称，不区分大小写的精确匹配 |
+| `downstreams` | `[]string` | 否 | 下游名称，不区分大小写的精确匹配 |
+| `operations` | `[]string` | 否 | 操作名称，不区分大小写的精确匹配 |
+| `methods` | `[]string` | 否 | HTTP 方法，不区分大小写的精确匹配 |
+| `hosts` | `[]string` | 否 | 请求 URL Host，可包含端口；支持 glob 且不区分大小写 |
+| `paths` | `[]string` | 否 | 请求 URL Path，不包含 query；支持 glob 且不区分大小写 |
+| `classes` | `[]string` | 否 | 请求分类：`internal_read`、`internal_write`、`external_read`、`external_write` |
 
-只有 `host` 和 `path` 支持 glob。`caller`、`downstream`、`operation` 和 `method` 只做不区分大小写的精确匹配；`class` 必须是支持的请求分类枚举。Host 和 Path 匹配也不区分大小写。
+同一字段中的多个值是“任一命中”，不同字段之间必须全部命中。只有 `hosts` 和 `paths` 支持 glob。旧的单数字段名不再支持，严格解析会将其视为未知字段。
 
 规则先按 `priority` 降序排列，再按匹配维度数量降序排列。只应用第一条命中的规则。
 
@@ -226,11 +226,11 @@ rules:
   - name: "retry-idempotent-payment"
     priority: 120
     match:
-      caller: ["orders-api"]
-      downstream: ["payments"]
-      operation: ["createPayment"]
-      method: ["POST"]
-      class: ["internal_write"]
+      callers: ["orders-api"]
+      downstreams: ["payments"]
+      operations: ["createPayment"]
+      methods: ["POST"]
+      classes: ["internal_write"]
     policy:
       max_retries: 1
       max_elapsed_time: 3s

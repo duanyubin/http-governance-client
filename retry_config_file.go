@@ -60,13 +60,13 @@ type RetryConfigRuleFile struct {
 
 // RetryConfigMatchFile contains the match dimensions for a configuration rule.
 type RetryConfigMatchFile struct {
-	Caller     []string `yaml:"caller" json:"caller"`
-	Downstream []string `yaml:"downstream" json:"downstream"`
-	Operation  []string `yaml:"operation" json:"operation"`
-	Method     []string `yaml:"method" json:"method"`
-	Host       []string `yaml:"host" json:"host"`
-	Path       []string `yaml:"path" json:"path"`
-	Class      []string `yaml:"class" json:"class"`
+	Callers     []string `yaml:"callers" json:"callers"`
+	Downstreams []string `yaml:"downstreams" json:"downstreams"`
+	Operations  []string `yaml:"operations" json:"operations"`
+	Methods     []string `yaml:"methods" json:"methods"`
+	Hosts       []string `yaml:"hosts" json:"hosts"`
+	Paths       []string `yaml:"paths" json:"paths"`
+	Classes     []string `yaml:"classes" json:"classes"`
 }
 
 // RetryPolicyPatchFile is the serialized form of a partial retry policy.
@@ -100,13 +100,13 @@ type compiledRetryConfigRule struct {
 }
 
 type compiledRetryConfigMatch struct {
-	Caller     []string
-	Downstream []string
-	Operation  []string
-	Method     []string
-	Host       []string
-	Path       []string
-	Class      []RequestClass
+	Callers     []string
+	Downstreams []string
+	Operations  []string
+	Methods     []string
+	Hosts       []string
+	Paths       []string
+	Classes     []RequestClass
 }
 
 type compiledDownstream struct {
@@ -450,25 +450,25 @@ func cloneIntSlice(values []int) []int {
 
 func compileRetryConfigMatch(match RetryConfigMatchFile) (compiledRetryConfigMatch, error) {
 	var compiled compiledRetryConfigMatch
-	compiled.Caller = normalizePatterns(match.Caller)
-	compiled.Downstream = normalizePatterns(match.Downstream)
-	compiled.Operation = normalizePatterns(match.Operation)
-	compiled.Method = normalizePatterns(match.Method)
-	compiled.Host = normalizePatterns(match.Host)
-	compiled.Path = normalizePatterns(match.Path)
-	if err := validateGlobPatterns("host", compiled.Host); err != nil {
+	compiled.Callers = normalizePatterns(match.Callers)
+	compiled.Downstreams = normalizePatterns(match.Downstreams)
+	compiled.Operations = normalizePatterns(match.Operations)
+	compiled.Methods = normalizePatterns(match.Methods)
+	compiled.Hosts = normalizePatterns(match.Hosts)
+	compiled.Paths = normalizePatterns(match.Paths)
+	if err := validateGlobPatterns("hosts", compiled.Hosts); err != nil {
 		return compiledRetryConfigMatch{}, err
 	}
-	if err := validateGlobPatterns("path", compiled.Path); err != nil {
+	if err := validateGlobPatterns("paths", compiled.Paths); err != nil {
 		return compiledRetryConfigMatch{}, err
 	}
-	if len(match.Class) > 0 {
-		compiled.Class = make([]RequestClass, 0, len(match.Class))
-		for _, item := range match.Class {
+	if len(match.Classes) > 0 {
+		compiled.Classes = make([]RequestClass, 0, len(match.Classes))
+		for _, item := range match.Classes {
 			class := RequestClass(strings.TrimSpace(item))
 			switch class {
 			case RequestClassInternalRead, RequestClassInternalWrite, RequestClassExternalRead, RequestClassExternalWrite:
-				compiled.Class = append(compiled.Class, class)
+				compiled.Classes = append(compiled.Classes, class)
 			default:
 				return compiledRetryConfigMatch{}, fmt.Errorf("unsupported class %q", item)
 			}
@@ -503,52 +503,52 @@ func validateGlobPatterns(field string, patterns []string) error {
 
 func (m compiledRetryConfigMatch) specificity() int {
 	score := 0
-	if len(m.Caller) > 0 {
+	if len(m.Callers) > 0 {
 		score++
 	}
-	if len(m.Downstream) > 0 {
+	if len(m.Downstreams) > 0 {
 		score++
 	}
-	if len(m.Operation) > 0 {
+	if len(m.Operations) > 0 {
 		score++
 	}
-	if len(m.Method) > 0 {
+	if len(m.Methods) > 0 {
 		score++
 	}
-	if len(m.Host) > 0 {
+	if len(m.Hosts) > 0 {
 		score++
 	}
-	if len(m.Path) > 0 {
+	if len(m.Paths) > 0 {
 		score++
 	}
-	if len(m.Class) > 0 {
+	if len(m.Classes) > 0 {
 		score++
 	}
 	return score
 }
 
 func (m compiledRetryConfigMatch) match(scope RetryConfigScope) bool {
-	if !matchExactValues(m.Caller, scope.Caller) {
+	if !matchExactValues(m.Callers, scope.Caller) {
 		return false
 	}
-	if !matchExactValues(m.Downstream, scope.Downstream) {
+	if !matchExactValues(m.Downstreams, scope.Downstream) {
 		return false
 	}
-	if !matchExactValues(m.Operation, scope.Operation) {
+	if !matchExactValues(m.Operations, scope.Operation) {
 		return false
 	}
-	if !matchExactValues(m.Method, strings.ToUpper(scope.Method)) {
+	if !matchExactValues(m.Methods, strings.ToUpper(scope.Method)) {
 		return false
 	}
-	if !matchHostPatterns(m.Host, scope.Host) {
+	if !matchHostPatterns(m.Hosts, scope.Host) {
 		return false
 	}
-	if !matchPathPatterns(m.Path, scope.Path) {
+	if !matchPathPatterns(m.Paths, scope.Path) {
 		return false
 	}
-	if len(m.Class) > 0 {
+	if len(m.Classes) > 0 {
 		matched := false
-		for _, class := range m.Class {
+		for _, class := range m.Classes {
 			if class == scope.Class {
 				matched = true
 				break

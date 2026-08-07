@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-07
+
+### 变更
+
+- `rules[].match` 的集合字段统一为复数：`callers`、`downstreams`、`operations`、`methods`、`hosts`、`paths`、`classes`；旧的单数字段不再支持。
+
 ## [0.5.1] - 2026-08-06
 
 ### 修复
