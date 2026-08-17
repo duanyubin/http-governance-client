@@ -2,9 +2,11 @@
 package prometheus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	httpclient "github.com/duanyubin/http-governance-client"
 	stdprometheus "github.com/prometheus/client_golang/prometheus"
 )
 
@@ -24,6 +26,7 @@ type Observer struct {
 }
 
 var _ stdprometheus.Collector = (*Observer)(nil)
+var _ httpclient.RetryResultObserver = (*Observer)(nil)
 
 // New creates and registers an Observer with registerer.
 func New(registerer stdprometheus.Registerer) (*Observer, error) {
@@ -96,4 +99,33 @@ func (o *Observer) Collect(ch chan<- stdprometheus.Metric) {
 	o.requestFailures.Collect(ch)
 	o.requestTimeouts.Collect(ch)
 	o.requestDuration.Collect(ch)
+}
+
+// ObserveRequestResult records the final result of one logical request.
+func (o *Observer) ObserveRequestResult(_ context.Context, event httpclient.RequestResultEvent) {
+	labels := []string{event.Caller, event.Downstream, event.Operation, event.Method, string(event.Class)}
+	requests := o.requests.WithLabelValues(labels...)
+	retriedRequests := o.retriedRequests.WithLabelValues(labels...)
+	retries := o.retries.WithLabelValues(labels...)
+	retrySucceededRequests := o.retrySucceededRequests.WithLabelValues(labels...)
+	requestFailures := o.requestFailures.WithLabelValues(labels...)
+	requestTimeouts := o.requestTimeouts.WithLabelValues(labels...)
+
+	requests.Inc()
+	if event.Retried {
+		retriedRequests.Inc()
+	}
+	if event.RetryCount > 0 {
+		retries.Add(float64(event.RetryCount))
+	}
+	if event.RetrySucceeded {
+		retrySucceededRequests.Inc()
+	}
+	if event.FinalFailed {
+		requestFailures.Inc()
+	}
+	if event.TimedOut {
+		requestTimeouts.Inc()
+	}
+	o.requestDuration.WithLabelValues(labels...).Observe(event.Duration.Seconds())
 }
