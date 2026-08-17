@@ -449,7 +449,104 @@ func initHTTPObserver() {
 
 Observer、Skipper、自定义 Resolver 和 Provider 都可能被多个请求并发调用，必须并发安全。这些扩展点为同步回调，不能被 `max_elapsed_time` 强制中断，可能消耗剩余预算或延迟实际返回，不应执行阻塞操作。
 
-组件不直接提供指标后端或链路追踪 SDK。调用方可通过 Observer 接入自己的监控系统。
+Prometheus 可直接使用下一节的内置适配器；其他指标后端或链路追踪系统可通过 Observer 自行接入。
+
+### 7.4 Prometheus 指标
+
+内置适配器实现了 `RetryResultObserver`，按每次最终结果事件更新指标。普通服务使用组件默认 Client 时，在启动阶段注册一次：
+
+```go
+import (
+	httpclient "github.com/duanyubin/http-governance-client"
+	prometheusmetrics "github.com/duanyubin/http-governance-client/metrics/prometheus"
+	stdprometheus "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+observer, err := prometheusmetrics.New(stdprometheus.DefaultRegisterer)
+if err != nil {
+	return err
+}
+httpclient.SetRetryResultObserver(observer)
+
+// 使用 net/http；Gin 可通过 gin.WrapH(promhttp.Handler()) 挂载。
+http.Handle("/metrics", promhttp.Handler())
+```
+
+`New(...)` 会把全部指标注册到传入的 `prometheus.Registerer`。重复向同一个 Registry 注册会返回错误；不要忽略该错误，也不要在每次请求中重复初始化。
+
+`SetRetryResultObserver(...)` 会替换默认 Client 上已有的最终结果 Observer。已经接入自定义 `RetryResultObserver` 时，应选择其中一个，或由调用方实现组合转发。
+
+需要与进程默认 Registry 隔离时，显式创建 Registry，并用同一个 Registry 暴露端点：
+
+```go
+registry := stdprometheus.NewRegistry()
+observer, err := prometheusmetrics.New(registry)
+if err != nil {
+	return err
+}
+httpclient.SetRetryResultObserver(observer)
+
+metricsHandler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+http.Handle("/metrics", metricsHandler)
+```
+
+使用第 8 节的独立 Client 时，不调用 `SetRetryResultObserver(...)`，而是在创建 Client 时传入同一个 Observer：
+
+```go
+registry := stdprometheus.NewRegistry()
+observer, err := prometheusmetrics.New(registry)
+if err != nil {
+	return err
+}
+client := httpclient.NewClientWithOptions(httpclient.ClientOptions{
+	ResultObserver: observer,
+})
+```
+
+适配器提供以下指标：
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `http_governance_client_requests_total` | Counter | 最终结果事件数 |
+| `http_governance_client_retried_requests_total` | Counter | 实际发生过重试的请求数 |
+| `http_governance_client_retries_total` | Counter | 额外重试次数之和 |
+| `http_governance_client_retry_succeeded_requests_total` | Counter | 重试后最终成功的请求数 |
+| `http_governance_client_request_failures_total` | Counter | 最终失败的请求数 |
+| `http_governance_client_request_timeouts_total` | Counter | 最终判定为超时的请求数 |
+| `http_governance_client_request_duration_seconds` | Histogram | 从首次尝试开始到最终结果的 Transport 级耗时 |
+
+所有指标只使用 `caller`、`downstream`、`operation`、`method`、`class` 五个标签，不包含 URL、状态码、错误文本、请求 ID 或重试原因。应通过 `operations` 配置稳定的逻辑操作名；未配置时，包含资源 ID 的回退 operation 可能造成高基数。
+
+指标与 7.2 的最终结果日志使用相同的 Transport 级语义。命中 `SkipperFunc` 的请求不产生指标；自动重定向的每一跳分别计数；辅助函数之后的 JSON/Protobuf 解码错误和耗时不计入指标。超时请求通常也属于最终失败请求，因此两个计数可能重叠。
+
+常用 PromQL 示例（结果乘以 `100` 后为百分率）：
+
+```promql
+# 重试率
+100 * sum(rate(http_governance_client_retried_requests_total[5m]))
+  / clamp_min(sum(rate(http_governance_client_requests_total[5m])), 1e-9)
+
+# 每秒额外重试次数
+sum(rate(http_governance_client_retries_total[5m]))
+
+# 最近 1 小时的额外重试次数
+sum(increase(http_governance_client_retries_total[1h]))
+
+# 重试成功率
+100 * sum(rate(http_governance_client_retry_succeeded_requests_total[5m]))
+  / clamp_min(sum(rate(http_governance_client_retried_requests_total[5m])), 1e-9)
+
+# 最终失败率
+100 * sum(rate(http_governance_client_request_failures_total[5m]))
+  / clamp_min(sum(rate(http_governance_client_requests_total[5m])), 1e-9)
+
+# 超时率
+100 * sum(rate(http_governance_client_request_timeouts_total[5m]))
+  / clamp_min(sum(rate(http_governance_client_requests_total[5m])), 1e-9)
+```
+
+需要分调用方、被调方或接口统计时，在分子和分母使用相同的 `sum by (caller, downstream, operation) (...)`。`clamp_min(..., 1e-9)` 只用于避免无流量窗口除以零。
 
 ## 8. 创建独立 Client（高级）
 

@@ -17,6 +17,7 @@
 - 跨服务传播 `X-No-More-Retry` 和 `X-Request-Deadline`
 - 单跳维护 `X-Retry-Attempt` 和 `X-Retry-Reason`
 - `slog` 日志及 `RetryObserver` / `RetryResultObserver`
+- 可选的 Prometheus 请求量、重试、失败、超时和耗时指标
 
 ## 安装
 
@@ -109,6 +110,29 @@ if result.StatusCode < 200 || result.StatusCode >= 300 {
 	return fmt.Errorf("payments returned HTTP %d", result.StatusCode)
 }
 ```
+
+### 4. Prometheus 指标（可选）
+
+需要直接采集指标时，在服务启动时注册内置适配器：
+
+```go
+import (
+	httpclient "github.com/duanyubin/http-governance-client"
+	prometheusmetrics "github.com/duanyubin/http-governance-client/metrics/prometheus"
+	"github.com/gin-gonic/gin"
+	stdprometheus "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+observer, err := prometheusmetrics.New(stdprometheus.DefaultRegisterer)
+if err != nil {
+	return err
+}
+httpclient.SetRetryResultObserver(observer)
+router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+```
+
+`/metrics` 端点由应用暴露。指标明细、独立 Registry 和 PromQL 示例见[接入与使用](docs/usage.md#74-prometheus-指标)。
 
 ## 重试安全约束
 
