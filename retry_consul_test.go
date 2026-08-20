@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -221,6 +222,106 @@ retry_budget:
 	want := retryBudgetConfig{Enabled: true, Capacity: 8, RetryCost: 10, SuccessIncrement: 1}
 	if budget != want {
 		t.Fatalf("retry budget = %+v, want %+v", budget, want)
+	}
+}
+
+func TestRetryBudgetStateSurvivesManagedConfigReload(t *testing.T) {
+	config := func(enabled bool, capacity int) []byte {
+		return []byte(fmt.Sprintf(`
+version: v1
+retry_budget:
+  enabled: %t
+  capacity: %d
+  retry_cost: 1
+  success_increment: 1
+policies:
+  external_read:
+    max_retries: 1
+    initial_backoff: 1ms
+    max_backoff: 1ms
+    retry_on_statuses: [503]
+`, enabled, capacity))
+	}
+	store := &fakeRetryConfigStore{}
+	store.Set("config/go/application/retry", config(true, 1))
+	provider := NewManagedRetryConfigProvider()
+	if err := reloadRetryConfigFromStore(context.Background(), provider, store, "shop"); err != nil {
+		t.Fatalf("initial reloadRetryConfigFromStore() error = %v", err)
+	}
+
+	var attempts atomic.Int32
+	var responseStatus atomic.Int32
+	responseStatus.Store(http.StatusServiceUnavailable)
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			attempts.Add(1)
+			return testHTTPResponse(req, int(responseStatus.Load())), nil
+		}),
+	}
+	doRequest := func() int32 {
+		t.Helper()
+		before := attempts.Load()
+		req, err := http.NewRequest(http.MethodGet, "http://billing.example.com/orders", nil)
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("RoundTrip() error = %v", err)
+		}
+		_ = resp.Body.Close()
+		return attempts.Load() - before
+	}
+	reload := func(enabled bool, capacity int) {
+		t.Helper()
+		store.Set("config/go/application/retry", config(enabled, capacity))
+		if err := reloadRetryConfigFromStore(context.Background(), provider, store, "shop"); err != nil {
+			t.Fatalf("reloadRetryConfigFromStore() error = %v", err)
+		}
+	}
+
+	if got := doRequest(); got != 2 {
+		t.Fatalf("initial request attempts = %d, want 2", got)
+	}
+	reload(true, 1)
+	if got := doRequest(); got != 1 {
+		t.Fatalf("attempts after identical reload = %d, want 1", got)
+	}
+	reload(false, 1)
+	if got := doRequest(); got != 2 {
+		t.Fatalf("attempts while budget disabled = %d, want 2", got)
+	}
+	reload(true, 1)
+	if got := doRequest(); got != 1 {
+		t.Fatalf("attempts after re-enable = %d, want retained exhausted state", got)
+	}
+	reload(true, 2)
+	if got := doRequest(); got != 1 {
+		t.Fatalf("attempts after capacity growth = %d, want no refill", got)
+	}
+
+	responseStatus.Store(http.StatusOK)
+	if got := doRequest(); got != 1 {
+		t.Fatalf("successful request attempts = %d, want 1", got)
+	}
+	responseStatus.Store(http.StatusServiceUnavailable)
+	if got := doRequest(); got != 2 {
+		t.Fatalf("attempts after success increment = %d, want 2", got)
+	}
+
+	reload(true, 5)
+	responseStatus.Store(http.StatusOK)
+	for i := 0; i < 4; i++ {
+		doRequest()
+	}
+	reload(true, 1)
+	responseStatus.Store(http.StatusServiceUnavailable)
+	if got := doRequest(); got != 2 {
+		t.Fatalf("attempts after capacity shrink = %d, want 2", got)
+	}
+	if got := doRequest(); got != 1 {
+		t.Fatalf("attempts after consuming clamped balance = %d, want 1", got)
 	}
 }
 
