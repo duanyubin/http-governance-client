@@ -388,6 +388,307 @@ policies:
 	}
 }
 
+func TestRoundTripSuppressesRetryWhenDownstreamBudgetIsExhausted(t *testing.T) {
+	provider, err := NewManagedRetryConfigProviderFromYAML([]byte(`
+version: v1
+retry_budget:
+  enabled: true
+  capacity: 1
+  retry_cost: 1
+  success_increment: 1
+policies:
+  external_read:
+    max_retries: 1
+    initial_backoff: 1ms
+    max_backoff: 1ms
+    retry_on_statuses: [503]
+`))
+	if err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+	observer := &testResultObserver{}
+	var attempts atomic.Int32
+	transport := &Transport{
+		ConfigProvider: provider,
+		ResultObserver: observer,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			attempt := attempts.Add(1)
+			return &stdhttp.Response{
+				StatusCode: stdhttp.StatusServiceUnavailable,
+				Header:     make(stdhttp.Header),
+				Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("attempt-%d", attempt))),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	for requestNumber := 1; requestNumber <= 2; requestNumber++ {
+		req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("request %d RoundTrip() error = %v", requestNumber, err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Fatalf("request %d response close error = %v", requestNumber, closeErr)
+		}
+		if readErr != nil {
+			t.Fatalf("request %d response read error = %v", requestNumber, readErr)
+		}
+		if requestNumber == 2 && string(body) != "attempt-3" {
+			t.Fatalf("second response body = %q, want current attempt body", body)
+		}
+	}
+
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+	if got := len(observer.resultEvents); got != 2 {
+		t.Fatalf("result events = %d, want 2", got)
+	}
+	if got := observer.resultEvents[0].AttemptCount; got != 2 {
+		t.Fatalf("first attempt count = %d, want 2", got)
+	}
+	second := observer.resultEvents[1]
+	if second.AttemptCount != 1 {
+		t.Fatalf("second attempt count = %d, want 1", second.AttemptCount)
+	}
+	if second.RetrySuppressedReason != RetrySuppressedReasonBudgetExhausted {
+		t.Fatalf("second suppression reason = %q, want %q", second.RetrySuppressedReason, RetrySuppressedReasonBudgetExhausted)
+	}
+}
+
+func TestRoundTripSuccessfulRequestRestoresRetryBudget(t *testing.T) {
+	provider := newRetryBudgetTransportProvider(t, 1, 1, 1)
+	var attempts atomic.Int32
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			attempt := attempts.Add(1)
+			status := stdhttp.StatusServiceUnavailable
+			if attempt == 4 || attempt == 6 {
+				status = stdhttp.StatusOK
+			}
+			return testHTTPResponse(req, status), nil
+		}),
+	}
+
+	for i := 0; i < 4; i++ {
+		req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("request %d RoundTrip() error = %v", i+1, err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	if got := attempts.Load(); got != 6 {
+		t.Fatalf("attempts = %d, want 6", got)
+	}
+}
+
+func TestRoundTripRetrySuccessRestoresOnlyOneIncrement(t *testing.T) {
+	provider := newRetryBudgetTransportProvider(t, 10, 10, 1)
+	var attempts atomic.Int32
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			attempt := attempts.Add(1)
+			if attempt == 2 {
+				return testHTTPResponse(req, stdhttp.StatusOK), nil
+			}
+			return testHTTPResponse(req, stdhttp.StatusServiceUnavailable), nil
+		}),
+	}
+
+	for i := 0; i < 2; i++ {
+		req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("request %d RoundTrip() error = %v", i+1, err)
+		}
+		_ = resp.Body.Close()
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3; retry success must not refill the full retry cost", got)
+	}
+}
+
+func TestRoundTripRefundsRetryBudgetWhenBackoffIsCanceled(t *testing.T) {
+	provider := newRetryBudgetTransportProvider(t, 1, 1, 1)
+	responseReturned := make(chan struct{}, 1)
+	var attempts atomic.Int32
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			attempt := attempts.Add(1)
+			select {
+			case responseReturned <- struct{}{}:
+			default:
+			}
+			if attempt == 3 {
+				return testHTTPResponse(req, stdhttp.StatusOK), nil
+			}
+			return testHTTPResponse(req, stdhttp.StatusServiceUnavailable), nil
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		resp, err := transport.RoundTrip(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		result <- err
+	}()
+	<-responseReturned
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled RoundTrip() error = %v, want context canceled", err)
+	}
+
+	req, err = stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("second RoundTrip() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3 after refunded reservation", got)
+	}
+}
+
+func TestRoundTripRefundsRetryBudgetWhenGetBodyFails(t *testing.T) {
+	provider := newRetryBudgetTransportProvider(t, 1, 1, 1)
+	var attempts atomic.Int32
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			if attempts.Add(1) == 3 {
+				return testHTTPResponse(req, stdhttp.StatusOK), nil
+			}
+			return testHTTPResponse(req, stdhttp.StatusServiceUnavailable), nil
+		}),
+	}
+
+	failedReplay, err := stdhttp.NewRequest(stdhttp.MethodPost, "http://billing.example.com/orders", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	failedReplay.GetBody = func() (io.ReadCloser, error) {
+		return nil, errors.New("replay failed")
+	}
+	if resp, err := transport.RoundTrip(failedReplay); err == nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatal("RoundTrip() error = nil, want replay failure")
+	}
+
+	replayable, err := stdhttp.NewRequest(stdhttp.MethodPost, "http://billing.example.com/orders", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	resp, err := transport.RoundTrip(replayable)
+	if err != nil {
+		t.Fatalf("second RoundTrip() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3 after GetBody refund", got)
+	}
+}
+
+func TestRoundTripWithoutRetryBudgetPreservesConfiguredRetries(t *testing.T) {
+	provider, err := NewManagedRetryConfigProviderFromYAML([]byte(`
+version: v1
+policies:
+  external_read:
+    max_retries: 1
+    initial_backoff: 1ms
+    max_backoff: 1ms
+    retry_on_statuses: [503]
+`))
+	if err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+	var attempts atomic.Int32
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			attempts.Add(1)
+			return testHTTPResponse(req, stdhttp.StatusServiceUnavailable), nil
+		}),
+	}
+	for i := 0; i < 2; i++ {
+		req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("RoundTrip() error = %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+	if got := attempts.Load(); got != 4 {
+		t.Fatalf("attempts = %d, want 4", got)
+	}
+}
+
+func newRetryBudgetTransportProvider(t *testing.T, capacity, retryCost, successIncrement int) *ManagedRetryConfigProvider {
+	t.Helper()
+	provider, err := NewManagedRetryConfigProviderFromYAML([]byte(fmt.Sprintf(`
+version: v1
+retry_budget:
+  enabled: true
+  capacity: %d
+  retry_cost: %d
+  success_increment: %d
+policies:
+  external_read:
+    max_retries: 1
+    initial_backoff: 20ms
+    max_backoff: 20ms
+    retry_on_statuses: [503]
+  external_write:
+    max_retries: 1
+    initial_backoff: 1ms
+    max_backoff: 1ms
+    retry_on_statuses: [503]
+`, capacity, retryCost, successIncrement)))
+	if err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+	return provider
+}
+
+func testHTTPResponse(req *stdhttp.Request, status int) *stdhttp.Response {
+	return &stdhttp.Response{
+		StatusCode: status,
+		Header:     make(stdhttp.Header),
+		Body:       stdhttp.NoBody,
+		Request:    req,
+	}
+}
+
 func TestIndependentClientUsesCustomProviderClassForBaselinePolicy(t *testing.T) {
 	ClearRequestClassResolver()
 	t.Cleanup(ClearRequestClassResolver)

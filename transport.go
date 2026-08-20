@@ -51,6 +51,7 @@ type Transport struct {
 	ConfigProvider RetryConfigProvider
 	Observer       RetryObserver
 	ResultObserver RetryResultObserver
+	retryBudget    retryBudget
 }
 
 // RoundTrip applies request classification, policy resolution, retry budgeting
@@ -83,10 +84,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var policy RetryPolicy
 	var class RequestClass
 	var scope RetryConfigScope
+	var budgetConfig retryBudgetConfig
 	resolveDynamicPolicy := false
 	if provider, ok := configProvider.(*ManagedRetryConfigProvider); ok {
 		policy = policyResolver(req)
-		scope, policy, _ = provider.resolveRequestConfig(req, policy)
+		scope, policy, budgetConfig = provider.resolveRequestConfig(req, policy)
 		class = scope.Class
 		policy = normalizeRetryPolicy(policy)
 	} else {
@@ -140,9 +142,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var lastErr error
 	var finalResp *http.Response
 	var finalErr error
+	var pendingReservation *retryBudgetReservation
+	var retrySuppressedReason string
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptReq, cancel, err := prepareAttemptRequest(loopReq, policy, attempt, attempt == maxRetries || originalNoMoreRetry, overallDeadline, hasOverallDeadline, lastResp, lastErr)
 		if err != nil {
+			pendingReservation.refund()
+			pendingReservation = nil
 			if attempt == 0 && req.Body != nil {
 				_ = req.Body.Close()
 			}
@@ -151,6 +157,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			break
 		}
 		totalAttempts = attempt + 1
+		pendingReservation.commit()
+		pendingReservation = nil
 		resp, err := t.roundTripOnce(attemptReq, roundTripper)
 		if err == nil && resp != nil {
 			resp.Body = wrapBodyWithCancel(resp.Body, cancel)
@@ -169,6 +177,21 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if hasOverallDeadline && delay > 0 && time.Now().Add(delay).After(overallDeadline) {
 			finalResp = resp
 			finalErr = err
+			break
+		}
+		var reserved bool
+		pendingReservation, reserved = t.retryBudget.reserve(scope.Downstream, budgetConfig)
+		if !reserved {
+			retrySuppressedReason = RetrySuppressedReasonBudgetExhausted
+			slog.WarnContext(attemptReq.Context(), "HTTPClient retry suppressed",
+				"method", attemptReq.Method,
+				"url", attemptReq.URL.String(),
+				"caller", scope.Caller,
+				"downstream", scope.Downstream,
+				"operation", scope.Operation,
+				"class", class,
+				"reason", retrySuppressedReason,
+			)
 			break
 		}
 		if observer != nil {
@@ -199,11 +222,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		lastResp = resp
 		lastErr = err
 		if err := waitRetryDelay(loopReq.Context(), delay); err != nil {
+			pendingReservation.refund()
+			pendingReservation = nil
 			finalErr = err
 			break
 		}
 	}
-	observeRequestResult(observer, resultObserver, loopReq.Context(), req, scope, class, maxRetries, totalAttempts, start, finalResp, finalErr)
+	if finalErr == nil && finalResp != nil && finalResp.StatusCode < http.StatusBadRequest {
+		t.retryBudget.recordSuccess(scope.Downstream, budgetConfig)
+	}
+	observeRequestResult(observer, resultObserver, loopReq.Context(), req, scope, class, maxRetries, totalAttempts, start, finalResp, finalErr, retrySuppressedReason)
 	if finalResp != nil || finalErr != nil {
 		if finalResp != nil {
 			finalResp.Body = wrapBodyWithCancel(finalResp.Body, overallCancel)
@@ -530,7 +558,7 @@ func statusCode(resp *http.Response) int {
 	return resp.StatusCode
 }
 
-func observeRequestResult(observer RetryObserver, resultObserver RetryResultObserver, ctx context.Context, req *http.Request, scope RetryConfigScope, class RequestClass, maxRetries, totalAttempts int, start time.Time, resp *http.Response, err error) {
+func observeRequestResult(observer RetryObserver, resultObserver RetryResultObserver, ctx context.Context, req *http.Request, scope RetryConfigScope, class RequestClass, maxRetries, totalAttempts int, start time.Time, resp *http.Response, err error, retrySuppressedReason string) {
 	retryCount := totalAttempts - 1
 	if retryCount < 0 {
 		retryCount = 0
@@ -540,23 +568,24 @@ func observeRequestResult(observer RetryObserver, resultObserver RetryResultObse
 	timedOut := isTimeoutError(err) ||
 		resp != nil && (resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout)
 	event := RequestResultEvent{
-		Method:         scope.Method,
-		URL:            scope.Path,
-		Caller:         scope.Caller,
-		Downstream:     scope.Downstream,
-		Operation:      scope.Operation,
-		Class:          class,
-		AttemptCount:   totalAttempts,
-		RetryCount:     retryCount,
-		MaxRetries:     maxRetries,
-		StatusCode:     statusCode(resp),
-		FinalReason:    finalReason,
-		FinalError:     errorString(err),
-		Retried:        retryCount > 0,
-		RetrySucceeded: retryCount > 0 && !finalFailed,
-		FinalFailed:    finalFailed,
-		TimedOut:       timedOut,
-		Duration:       time.Since(start),
+		Method:                scope.Method,
+		URL:                   scope.Path,
+		Caller:                scope.Caller,
+		Downstream:            scope.Downstream,
+		Operation:             scope.Operation,
+		Class:                 class,
+		AttemptCount:          totalAttempts,
+		RetryCount:            retryCount,
+		MaxRetries:            maxRetries,
+		StatusCode:            statusCode(resp),
+		FinalReason:           finalReason,
+		FinalError:            errorString(err),
+		RetrySuppressedReason: retrySuppressedReason,
+		Retried:               retryCount > 0,
+		RetrySucceeded:        retryCount > 0 && !finalFailed,
+		FinalFailed:           finalFailed,
+		TimedOut:              timedOut,
+		Duration:              time.Since(start),
 	}
 	if req != nil && req.URL != nil {
 		event.URL = req.URL.String()
@@ -579,6 +608,7 @@ func observeRequestResult(observer RetryObserver, resultObserver RetryResultObse
 		"status", event.StatusCode,
 		"finalReason", event.FinalReason,
 		"finalError", event.FinalError,
+		"retrySuppressedReason", event.RetrySuppressedReason,
 		"retried", event.Retried,
 		"retrySucceeded", event.RetrySucceeded,
 		"finalFailed", event.FinalFailed,
