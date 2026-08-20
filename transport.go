@@ -86,7 +86,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resolveDynamicPolicy := false
 	if provider, ok := configProvider.(*ManagedRetryConfigProvider); ok {
 		policy = policyResolver(req)
-		scope, policy = provider.resolveRequestConfig(req, policy)
+		scope, policy, _ = provider.resolveRequestConfig(req, policy)
 		class = scope.Class
 		policy = normalizeRetryPolicy(policy)
 	} else {

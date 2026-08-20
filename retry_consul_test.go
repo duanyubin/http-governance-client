@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -183,6 +184,43 @@ policies:
 	}
 	if len(statuses) != 0 {
 		t.Fatalf("RetryOnStatuses = %v, want empty", statuses)
+	}
+}
+
+func TestLoadRetryConfigFileFromStoreMergesRetryBudgetFields(t *testing.T) {
+	store := &fakeRetryConfigStore{data: map[string][]byte{
+		"config/go/application/retry": []byte(`
+version: v1
+retry_budget:
+  enabled: true
+  capacity: 20
+  retry_cost: 10
+  success_increment: 1
+`),
+		"config/go/shop/retry": []byte(`
+version: v1
+retry_budget:
+  capacity: 8
+`),
+	}}
+
+	file, err := loadRetryConfigFileFromStore(store, "shop")
+	if err != nil {
+		t.Fatalf("loadRetryConfigFileFromStore() error = %v", err)
+	}
+	provider := NewManagedRetryConfigProvider()
+	if err := provider.Update(file); err != nil {
+		t.Fatalf("provider.Update() error = %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://billing.example.com/orders", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	_, _, budget := provider.resolveRequestConfig(req, RetryPolicy{})
+	want := retryBudgetConfig{Enabled: true, Capacity: 8, RetryCost: 10, SuccessIncrement: 1}
+	if budget != want {
+		t.Fatalf("retry budget = %+v, want %+v", budget, want)
 	}
 }
 
