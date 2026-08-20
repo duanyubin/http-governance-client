@@ -461,6 +461,43 @@ policies:
 	}
 }
 
+func TestRoundTripLogsBudgetExhaustedRetrySuppression(t *testing.T) {
+	handler := &captureLogHandler{level: slog.LevelWarn}
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	provider := newRetryBudgetTransportProvider(t, 1, 1, 1)
+	transport := &Transport{
+		ConfigProvider: provider,
+		RoundTripper: roundTripperFunc(func(req *stdhttp.Request) (*stdhttp.Response, error) {
+			return testHTTPResponse(req, stdhttp.StatusServiceUnavailable), nil
+		}),
+	}
+	for i := 0; i < 2; i++ {
+		req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("RoundTrip() error = %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	for key, want := range map[string]any{
+		"reason":     RetrySuppressedReasonBudgetExhausted,
+		"downstream": "billing",
+		"operation":  "GET /orders",
+	} {
+		got, ok := handler.attrValue("HTTPClient retry suppressed", key)
+		if !ok || got != want {
+			t.Fatalf("suppression log %s = %v, want %v; records: %s", key, got, want, handler)
+		}
+	}
+}
+
 func TestRoundTripSuccessfulRequestRestoresRetryBudget(t *testing.T) {
 	provider := newRetryBudgetTransportProvider(t, 1, 1, 1)
 	var attempts atomic.Int32

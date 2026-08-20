@@ -115,6 +115,38 @@ func TestObserveRequestResultRecordsFailureAndTimeout(t *testing.T) {
 	assertCounterValue(t, registry, namespace+"_retry_succeeded_requests_total", 0)
 }
 
+func TestObserveRequestResultRecordsSuppressedRetry(t *testing.T) {
+	registry := stdprometheus.NewRegistry()
+	observer, err := New(registry)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	event := httpclient.RequestResultEvent{
+		Caller:                "shop",
+		Downstream:            "billing",
+		Operation:             "queryBalance",
+		Method:                "POST",
+		Class:                 httpclient.RequestClassInternalRead,
+		RetrySuppressedReason: httpclient.RetrySuppressedReasonBudgetExhausted,
+	}
+	observer.ObserveRequestResult(context.Background(), event)
+	event.RetrySuppressedReason = ""
+	observer.ObserveRequestResult(context.Background(), event)
+
+	assertCounterValue(t, registry, namespace+"_retries_suppressed_total", 1)
+	wantLabels := map[string]string{
+		"caller":     "shop",
+		"class":      "internal_read",
+		"downstream": "billing",
+		"method":     "POST",
+		"operation":  "queryBalance",
+		"reason":     "budget_exhausted",
+	}
+	if got := metricLabelsFor(t, registry, namespace+"_retries_suppressed_total"); !reflect.DeepEqual(got, wantLabels) {
+		t.Fatalf("suppression labels = %v, want %v", got, wantLabels)
+	}
+}
+
 func TestObserveRequestResultIsConcurrentSafe(t *testing.T) {
 	registry := stdprometheus.NewRegistry()
 	observer, err := New(registry)
