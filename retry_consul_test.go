@@ -225,6 +225,16 @@ retry_budget:
 	}
 }
 
+func TestLoadRetryConfigFileFromStoreRejectsInvalidRetryBudgetBeforeMerge(t *testing.T) {
+	store := &fakeRetryConfigStore{data: map[string][]byte{
+		"config/go/application/retry": []byte("version: v1\nretry_budget:\n  capacity: 0\n"),
+		"config/go/shop/retry":        []byte("version: v1\nretry_budget:\n  capacity: 8\n"),
+	}}
+	if _, err := loadRetryConfigFileFromStore(store, "shop"); err == nil {
+		t.Fatal("loadRetryConfigFileFromStore() error = nil, want invalid application layer error")
+	}
+}
+
 func TestRetryBudgetStateSurvivesManagedConfigReload(t *testing.T) {
 	config := func(enabled bool, capacity int) []byte {
 		return []byte(fmt.Sprintf(`

@@ -121,11 +121,19 @@ func (b *retryBudget) recordSuccess(key string, cfg retryBudgetConfig) {
 	if !cfg.Enabled {
 		return
 	}
-	b.add(normalizeRetryBudgetKey(key), cfg.SuccessIncrement, cfg.Capacity)
+	key = normalizeRetryBudgetKey(key)
+	existing, ok := b.entries.Load(key)
+	if !ok {
+		return
+	}
+	addRetryBudgetBalance(existing.(*retryBudgetEntry), cfg.SuccessIncrement, cfg.Capacity)
 }
 
 func (b *retryBudget) add(key string, amount, capacity int64) {
-	entry := b.entry(key, capacity)
+	addRetryBudgetBalance(b.entry(key, capacity), amount, capacity)
+}
+
+func addRetryBudgetBalance(entry *retryBudgetEntry, amount, capacity int64) {
 	for {
 		balance := entry.balance.Load()
 		if balance >= capacity {

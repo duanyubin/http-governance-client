@@ -99,6 +99,20 @@ func TestRetryBudgetSuccessStopsAtCapacity(t *testing.T) {
 	}
 }
 
+func TestRetryBudgetSuccessDoesNotCreateUnusedEntry(t *testing.T) {
+	cfg := retryBudgetConfig{Enabled: true, Capacity: 10, RetryCost: 10, SuccessIncrement: 1}
+	var budget retryBudget
+	budget.recordSuccess("billing", cfg)
+	entries := 0
+	budget.entries.Range(func(_, _ any) bool {
+		entries++
+		return true
+	})
+	if entries != 0 {
+		t.Fatalf("entries = %d, want 0 for an already-full unused budget", entries)
+	}
+}
+
 func TestRetryBudgetConcurrentReservationsDoNotOverdraw(t *testing.T) {
 	cfg := retryBudgetConfig{Enabled: true, Capacity: 20, RetryCost: 1, SuccessIncrement: 1}
 	var budget retryBudget
@@ -130,7 +144,8 @@ func BenchmarkRetryBudgetDisabled(b *testing.B) {
 func BenchmarkRetryBudgetSuccessAtCapacity(b *testing.B) {
 	cfg := retryBudgetConfig{Enabled: true, Capacity: 20, RetryCost: 10, SuccessIncrement: 1}
 	var budget retryBudget
-	budget.recordSuccess("billing", cfg)
+	reservation, _ := budget.reserve("billing", cfg)
+	reservation.refund()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

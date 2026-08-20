@@ -99,14 +99,14 @@ retry_budget:
 | `retry_cost` | `int` | 启用时是 | 必须 `> 0` | 每次额外重试消耗的余额；所有重试原因使用同一成本 |
 | `success_increment` | `int` | 启用时是 | 必须 `> 0` | 一次逻辑请求最终成功后恢复的余额，每次请求最多恢复一次 |
 
-同一 `Transport` 使用一组参数，并为每个规范化后的 downstream 名称维护独立余额；不同 `Transport` 实例不共享余额。应通过 `downstreams` 配置稳定且数量可控的名称；未配置时通常回退到目标 hostname 的第一段，名称仍为空时才使用 `unclassified`。每个不同名称对应的状态会保留到该 `Transport` 生命周期结束。`capacity < retry_cost` 是合法配置，效果是禁止所有额外重试。
+同一 `Transport` 使用一组参数，并为每个规范化后的 downstream 名称维护独立余额；不同 `Transport` 实例不共享余额。应通过 `downstreams` 配置稳定且数量可控的名称；未配置时通常回退到目标 hostname 的第一段，名称仍为空时才使用 `unclassified`。进入预算检查的不同名称会保留状态，直到该 `Transport` 生命周期结束。`capacity < retry_cost` 是合法配置，效果是禁止所有额外重试。
 
 容量关系为：
 
 ```text
-单个 Transport 的突发重试数 = floor(capacity / retry_cost)
-进程集群的近似突发重试数 = Transport 实例数 × floor(capacity / retry_cost)
-恢复一次重试所需成功请求数 = ceil(retry_cost / success_increment)
+单个 Transport 内单个 downstream 的突发重试数 = floor(capacity / retry_cost)
+同一 downstream 在进程集群中的近似突发重试数 = Transport 实例数 × floor(capacity / retry_cost)
+capacity >= retry_cost 时，恢复一次重试所需成功请求数 = ceil(retry_cost / success_increment)
 ```
 
 预算不能替代写请求幂等保障、deadline、首次请求限流、熔断或服务端过载保护。

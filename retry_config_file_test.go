@@ -126,6 +126,26 @@ func TestManagedRetryConfigProviderRejectsInvalidRetryBudget(t *testing.T) {
 	}
 }
 
+func TestManagedRetryConfigProviderRejectsIncompleteEnabledRetryBudget(t *testing.T) {
+	tests := []string{
+		"capacity: 20\nretry_cost: 10",
+		"capacity: 20\nsuccess_increment: 1",
+		"retry_cost: 10\nsuccess_increment: 1",
+	}
+	for _, fields := range tests {
+		data := "version: v1\nretry_budget:\n  enabled: true\n  " + strings.ReplaceAll(fields, "\n", "\n  ") + "\n"
+		if _, err := NewManagedRetryConfigProviderFromYAML([]byte(data)); err == nil {
+			t.Fatalf("NewManagedRetryConfigProviderFromYAML(%q) error = nil, want incomplete budget error", fields)
+		}
+	}
+}
+
+func TestManagedRetryConfigProviderAllowsDisabledIncompleteRetryBudget(t *testing.T) {
+	if _, err := NewManagedRetryConfigProviderFromYAML([]byte("version: v1\nretry_budget:\n  enabled: false\n")); err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+}
+
 func TestManagedRetryConfigProviderRejectsUnsupportedVersion(t *testing.T) {
 	data := []byte(`
 version: v2
