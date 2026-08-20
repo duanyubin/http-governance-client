@@ -12,10 +12,11 @@
 4. 应用动态分类策略和第一条匹配规则
 5. 应用上游禁止重试和截止时间约束
 6. 检查请求体是否可重放
-7. 执行首次请求及有限重试
-8. 输出最终结果事件和日志
+7. 执行首次请求
+8. 已满足现有重试条件时，检查当前 downstream 的本地重试预算并执行有限重试
+9. 输出最终结果事件和日志
 
-内置 `ManagedRetryConfigProvider` 会在同一个配置读锁内完成分类、Scope 和策略解析。一次请求只使用同一代动态配置。
+内置 `ManagedRetryConfigProvider` 会在同一个配置读锁内完成分类、Scope、策略和重试预算参数解析。一次请求只使用同一代动态配置。
 
 ## 2. 默认策略
 
@@ -80,23 +81,40 @@ X-Request-Deadline: 1893456000000
 
 `X-Request-Deadline` 是绝对时间，各服务节点需要保持可靠的时钟同步。截止时间已到时，调用返回的传输错误为 `context.DeadlineExceeded`；如果已经收到最终 HTTP 响应，则仍由调用方处理该响应。
 
-## 6. 链路约束
+## 6. 本地重试预算
 
-### 6.1 `X-No-More-Retry`
+配置 `retry_budget` 后，每个 `Transport` 按 downstream 维护独立余额。首次请求永远不受预算限制；只有策略、状态码或传输错误、链路约束、Body 可重放性、重试次数和整体截止时间均已允许下一次尝试时，组件才预留一次 `retry_cost`。所有重试原因使用相同成本。
+
+预算不足时：
+
+- 不执行额外尝试，也不等待本次退避
+- 保留当前响应或传输错误作为最终结果
+- 最终事件的 `RetrySuppressedReason` 和日志字段 `retrySuppressedReason` 为 `budget_exhausted`
+- 输出 `HTTPClient retry suppressed` Warn 日志
+
+预留后，如果退避等待被取消，或准备下一次尝试时因 `GetBody` 等原因失败，预留会被归还；下一次 HTTP 尝试真正开始前，预留才会提交。
+
+一次逻辑请求最终满足 `err == nil`、响应非空且 HTTP 状态码 `< 400` 时，恢复一次 `success_increment`。首次成功和重试后成功都恢复，每个逻辑请求最多恢复一次，因此一次重试成功的净消耗仍为 `retry_cost - success_increment`。余额不会超过 `capacity`。
+
+省略 `retry_budget` 或设置 `enabled: false` 时完全绕过预算，保持原有重试行为。预算是单进程、单 `Transport` 的本地保护，不在实例之间共享，也不替代幂等保障、deadline、首次请求限流、熔断或服务端过载保护。
+
+## 7. 链路约束
+
+### 7.1 `X-No-More-Retry`
 
 值为 `true` 时，当前请求以及由其 Context 派生的下游调用都不能自动重试。下游配置不能重新放宽该约束。
 
 组件也会在当前调用的最后一次允许尝试上自动发送 `X-No-More-Retry: true`，避免下游在调用方已经耗尽本地重试额度时再次放大请求。
 
-### 6.2 `X-Request-Deadline`
+### 7.2 `X-Request-Deadline`
 
 表示整条链路的绝对截止时间。每一跳可以进一步缩短预算，但不能延长。
 
-### 6.3 `X-Retry-Attempt`
+### 7.3 `X-Retry-Attempt`
 
 表示当前调用方对当前下游的零基尝试序号。新的下游调用重新从 `0` 开始。
 
-### 6.4 `X-Retry-Reason`
+### 7.4 `X-Retry-Reason`
 
 表示当前调用关系中最近一次重试原因。当前值包括：
 
@@ -108,7 +126,7 @@ X-Request-Deadline: 1893456000000
 
 该 Header 不跨服务继承。
 
-## 7. Gin 传播
+## 8. Gin 传播
 
 `GovernanceMiddleware()` 只将以下入站 Header 导入标准请求 Context：
 
@@ -126,7 +144,7 @@ func handler(c *gin.Context) {
 }
 ```
 
-## 8. 请求结果
+## 9. 请求结果
 
 每次 Transport 完成出站调用后，组件会产生 `RequestResultEvent`。事件区分：
 
@@ -135,6 +153,7 @@ func handler(c *gin.Context) {
 - 最终是否失败
 - 是否超时
 - 最终 HTTP 状态码和错误原因
+- 重试是否因本地预算耗尽而被抑制
 
 调用方可以实现 `RetryObserver` 和 `RetryResultObserver` 接入自己的指标或追踪系统。通过 `SetRetryObserver(...)` 和 `SetRetryResultObserver(...)` 可以分别注册两类观察者；为兼容旧代码，实现了两个接口的 `RetryObserver` 仍可同时接收结果事件。
 
@@ -144,6 +163,6 @@ func handler(c *gin.Context) {
 
 观察者回调是同步调用的，并可能被多个请求并发执行。实现必须并发安全且快速返回；阻塞回调会增加请求耗时，并可能使调用的实际返回时间超过 `max_elapsed_time`。
 
-## 9. Skipper
+## 10. Skipper
 
 `SkipperFunc` 命中时会跳过请求分类、动态策略和自动重试，但不会移除链路约束。组件仍会传播 `X-No-More-Retry`、`X-Request-Deadline`，并重置当前调用关系的 Attempt/Reason Header。

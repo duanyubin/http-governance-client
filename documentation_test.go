@@ -52,6 +52,25 @@ func TestPublishedMarkdownLinksResolve(t *testing.T) {
 	}
 }
 
+func TestRetryBudgetDocumentation(t *testing.T) {
+	for _, file := range []string{"docs/config-reference.md", "docs/retry-semantics.md", "docs/usage.md"} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if !strings.Contains(string(data), "retry_budget") {
+			t.Errorf("%s does not document retry_budget", file)
+		}
+	}
+	data, err := os.ReadFile("docs/usage.md")
+	if err != nil {
+		t.Fatalf("read docs/usage.md: %v", err)
+	}
+	if !strings.Contains(string(data), "http_governance_client_retries_suppressed_total") {
+		t.Error("docs/usage.md does not document the suppressed retry metric")
+	}
+}
+
 func publishedDocumentationFiles(t *testing.T) []string {
 	t.Helper()
 	files := []string{"README.md", "CONTRIBUTING.md", "CHANGELOG.md", "SECURITY.md"}

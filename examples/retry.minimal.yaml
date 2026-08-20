@@ -2,6 +2,13 @@
 
 version: v1
 
+# Illustrative local budget for additional retries, isolated by downstream.
+retry_budget:
+  enabled: true
+  capacity: 20
+  retry_cost: 10
+  success_increment: 1
+
 internal_hosts:
   - "*.svc.cluster.local"
 

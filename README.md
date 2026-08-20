@@ -12,12 +12,13 @@
 
 - 内部读、内部写、外部读、外部写四类请求策略
 - 单次超时、整体预算、指数退避和随机抖动
+- 可选的按 downstream 隔离的本地重试预算，用于限制持续故障时的额外重试
 - 基于 `caller / downstream / operation / class` 的动态规则
 - Consul blocking query 热更新
 - 跨服务传播 `X-No-More-Retry` 和 `X-Request-Deadline`
 - 单跳维护 `X-Retry-Attempt` 和 `X-Retry-Reason`
 - `slog` 日志及 `RetryObserver` / `RetryResultObserver`
-- 可选的 Prometheus 请求量、重试、失败、超时和耗时指标
+- 可选的 Prometheus 请求量、重试、预算抑制、失败、超时和耗时指标
 
 ## 安装
 
@@ -145,6 +146,7 @@ router.GET("/metrics", gin.WrapH(promhttp.Handler()))
   - 使用其他自定义或流式 Body 时，需要自行设置 `GetBody`；未设置时组件会关闭该请求的自动重试，只发送一次
 - HTTP 尝试与退避受 `max_elapsed_time`、请求 Context deadline 和 `X-Request-Deadline` 中最早的截止时间约束
 - 上游 `X-No-More-Retry=true` 不能被下游配置重新放宽
+- 可通过 `retry_budget` 限制每个 downstream 的额外重试；该预算不限制首次请求，也不替代幂等、限流或服务端过载保护
 
 ## 文档
 
