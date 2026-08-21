@@ -33,7 +33,7 @@ var _ httpclient.RetryResultObserver = (*Observer)(nil)
 // New creates and registers an Observer with registerer.
 func New(registerer stdprometheus.Registerer) (*Observer, error) {
 	if registerer == nil {
-		return nil, errors.New("Prometheus registerer is nil")
+		return nil, errors.New("prometheus registerer is nil")
 	}
 
 	observer := &Observer{
