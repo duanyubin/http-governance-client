@@ -10,6 +10,7 @@
 - 地址是否需要显式添加 `http://` 或 `https://`
 - YAML 是否包含未知字段
 - duration 是否为合法且大于零的 Go duration
+- 启用 `retry_budget` 时，`capacity`、`retry_cost`、`success_increment` 是否均为正整数
 - 未禁用的 rule 是否包含有效 `match` 和 `policy`
 - downstream 是否同时包含非空 `name` 和 `hosts`
 
@@ -45,6 +46,11 @@
 - Context 或整体预算是否已经耗尽
 - 请求 Body 是否存在且 `GetBody == nil`
 - 错误是否属于可重试传输错误
+- 是否出现 `HTTPClient retry suppressed`，或最终日志中的 `retrySuppressedReason` 是否为 `budget_exhausted`
+
+`budget_exhausted` 表示其他条件已经允许重试，但当前 downstream 余额不足。此时组件保留当前响应或错误，并跳过额外尝试和退避。`retry_budget.enabled: false` 只是关闭预算保护，不是关闭重试；是否重试仍由策略、链路约束和 deadline 决定。
+
+如果不同接口意外共享余额，检查它们是否被识别为同一个 downstream，并通过 `downstreams` 配置稳定名称。不同 `Transport` 实例的余额彼此独立；进程内创建多个独立 Client 会分别维护预算。
 
 ## 标准 `http.Request` 未应用治理
 
@@ -89,6 +95,7 @@ Gin 服务需要：
 关注以下日志：
 
 - `HTTPClient retry scheduled`
+- `HTTPClient retry suppressed`
 - `HTTPClient request finished`
 - `HTTPClient retry config reloaded`
 - `HTTPClient retry config hot reload failed`

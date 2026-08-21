@@ -24,6 +24,12 @@ Key 不存在不视为初始化错误。读取失败、YAML 无效或配置校�
 ```yaml
 version: v1
 
+retry_budget:
+  enabled: true
+  capacity: 20
+  retry_cost: 10
+  success_increment: 1
+
 internal_hosts:
   - "*.svc.cluster.local"
 
@@ -67,13 +73,45 @@ YAML 使用严格字段校验，并且一份配置只能包含一个 YAML 文档
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `version` | `string` | 建议 | 当前支持空值或 `v1`；建议固定为 `v1` |
+| `retry_budget` | `object` | 否 | 按 downstream 隔离的本地重试预算；省略时关闭 |
 | `internal_hosts` | `[]string` | 否 | 内部主机匹配规则 |
 | `downstreams` | `[]object` | 否 | 下游名称识别规则 |
 | `operations` | `[]object` | 否 | 业务操作识别规则 |
 | `policies` | `object` | 否 | 四类请求的基线覆盖 |
 | `rules` | `[]object` | 否 | 特定请求的策略覆盖 |
 
-## 4. `internal_hosts`
+## 4. `retry_budget`
+
+`retry_budget` 是内置 `ManagedRetryConfigProvider` 的可选本地保护机制，只限制额外重试，不限制首次请求。它适用于 YAML、Consul 以及显式创建的 Managed Provider；自定义 `RetryConfigProvider` 接口不提供预算参数。以下数值仅为示例，需根据下游容量和实例规模评估：
+
+```yaml
+retry_budget:
+  enabled: true
+  capacity: 20
+  retry_cost: 10
+  success_increment: 1
+```
+
+| 字段 | 类型 | 必填 | 校验 | 说明 |
+| --- | --- | --- | --- | --- |
+| `enabled` | `bool` | 否 | 无 | `true` 时启用；省略、未配置 `retry_budget` 或设为 `false` 时关闭 |
+| `capacity` | `int` | 启用时是 | 必须 `> 0` | 每个 downstream 的余额上限 |
+| `retry_cost` | `int` | 启用时是 | 必须 `> 0` | 每次额外重试消耗的余额；所有重试原因使用同一成本 |
+| `success_increment` | `int` | 启用时是 | 必须 `> 0` | 一次逻辑请求最终成功后恢复的余额，每次请求最多恢复一次 |
+
+同一 `Transport` 使用一组参数，并为每个规范化后的 downstream 名称维护独立余额；不同 `Transport` 实例不共享余额。应通过 `downstreams` 配置稳定且数量可控的名称；未配置时通常回退到目标 hostname 的第一段，名称仍为空时才使用 `unclassified`。进入预算检查的不同名称会保留状态，直到该 `Transport` 生命周期结束。`capacity < retry_cost` 是合法配置，效果是禁止所有额外重试。
+
+容量关系为：
+
+```text
+单个 Transport 内单个 downstream 的突发重试数 = floor(capacity / retry_cost)
+同一 downstream 在进程集群中的近似突发重试数 = Transport 实例数 × floor(capacity / retry_cost)
+capacity >= retry_cost 时，恢复一次重试所需成功请求数 = ceil(retry_cost / success_increment)
+```
+
+预算不能替代写请求幂等保障、deadline、首次请求限流、熔断或服务端过载保护。
+
+## 5. `internal_hosts`
 
 支持精确 hostname、`host:port` 和 Go `path.Match` 风格的 glob：
 
@@ -93,7 +131,7 @@ internal_hosts:
 
 读方法为 `GET`、`HEAD`、`OPTIONS`、`TRACE`，其他方法按写请求处理。显式 Context 分类的优先级高于自动分类。
 
-## 5. `downstreams`
+## 6. `downstreams`
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -122,7 +160,7 @@ downstreams:
 
 Host 和一级 URL Path 都不区分大小写。
 
-## 6. `operations`
+## 7. `operations`
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -153,7 +191,7 @@ operations:
 
 没有命中 operation 时，组件使用 `METHOD + URL.Path` 作为回退名称，例如 `GET /v1/orders/123`。回退值不包含 scheme、host、query 或 fragment。
 
-## 7. `policies`
+## 8. `policies`
 
 支持以下分类：
 
@@ -176,7 +214,7 @@ operations:
 
 动态配置只覆盖已填写字段。
 
-### 7.1 策略字段
+### 8.1 策略字段
 
 | 字段 | 类型 | 校验 | 说明 |
 | --- | --- | --- | --- |
@@ -195,7 +233,7 @@ operations:
 
 `downstreams`、`operations` 以及非空的 `rules.name` 在同一份 YAML 中必须唯一（名称比较不区分大小写）。重复状态码会在加载时去重。
 
-## 8. `rules`
+## 9. `rules`
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -238,11 +276,12 @@ rules:
 
 只有具备幂等键、唯一请求号或等效去重能力的写操作才应启用自动重试。
 
-## 9. 应用级与服务级合并
+## 10. 应用级与服务级合并
 
 | 配置部分 | 合并方式 |
 | --- | --- |
 | `version` | 服务级非空值优先 |
+| `retry_budget` | 按字段合并，服务级已填写字段优先 |
 | `internal_hosts` | 两层列表合并并去重；服务级不能通过省略删除应用级值 |
 | `downstreams` | 按 `name` 匹配；服务级同名项整体替换应用级项 |
 | `operations` | 按 `name` 匹配；服务级同名项整体替换应用级项 |
@@ -259,7 +298,7 @@ rules:
 
 `internal_hosts`、`downstreams` 和 `operations` 没有通用删除标记。若需要删除应用级条目，应修改应用级 Key。
 
-## 10. 最终优先级
+## 11. 最终优先级
 
 策略按以下顺序计算：
 
@@ -271,10 +310,11 @@ rules:
 6. 上游禁止重试约束
 7. Context deadline、`X-Request-Deadline`、`max_elapsed_time` 中最早的截止时间
 8. Body 可重放性和剩余预算
+9. 当前 downstream 的本地重试预算
 
-前五层可以放宽或收紧当前调用策略；后三层只能收紧。
+前五层可以放宽或收紧当前调用策略；后四层只能收紧。
 
-## 11. 热更新行为
+## 12. 热更新行为
 
 - Consul Key 创建、更新和删除都会触发重新加载
 - 每次重新加载都会读取应用级和服务级两个 Key
@@ -282,6 +322,9 @@ rules:
 - 加载失败时继续使用上一份有效配置
 - 服务级 Key 删除后回退到应用级配置
 - 两个 Key 都不存在时动态配置清空，继续使用内置默认策略
+- `retry_budget` 参数随配置更新，但已存在的 downstream 余额不会重置或补满
+- 降低 `capacity` 时在该 downstream 下次操作时将余额截断到新上限；提高容量不会自动增加余额
+- 关闭预算时绕过余额检查且不修改余额；重新启用后继续使用原余额
 
 两个 Key 不构成 Consul 事务快照；同时修改时可能短暂读取到不同版本，后续 watch 会再次加载并收敛。
 

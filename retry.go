@@ -20,6 +20,11 @@ const (
 )
 
 const (
+	// RetrySuppressedReasonBudgetExhausted reports a retry denied by the local downstream budget.
+	RetrySuppressedReasonBudgetExhausted = "budget_exhausted"
+)
+
+const (
 	// HeaderRetryAttempt carries the zero-based attempt number for the current request.
 	HeaderRetryAttempt = "X-Retry-Attempt"
 	// HeaderNoMoreRetry tells downstream callers not to relax the current retry budget.
@@ -67,23 +72,24 @@ type RetryEvent struct {
 // RequestResultEvent records the transport-level outcome after all retries.
 // It does not include response-body decoding performed by helper functions.
 type RequestResultEvent struct {
-	Method         string
-	URL            string
-	Caller         string
-	Downstream     string
-	Operation      string
-	Class          RequestClass
-	AttemptCount   int
-	RetryCount     int
-	MaxRetries     int
-	StatusCode     int
-	FinalReason    string
-	FinalError     string
-	Retried        bool
-	RetrySucceeded bool
-	FinalFailed    bool
-	TimedOut       bool
-	Duration       time.Duration
+	Method                string
+	URL                   string
+	Caller                string
+	Downstream            string
+	Operation             string
+	Class                 RequestClass
+	AttemptCount          int
+	RetryCount            int
+	MaxRetries            int
+	StatusCode            int
+	FinalReason           string
+	FinalError            string
+	RetrySuppressedReason string
+	Retried               bool
+	RetrySucceeded        bool
+	FinalFailed           bool
+	TimedOut              bool
+	Duration              time.Duration
 }
 
 // RetryObserver receives retry scheduling events.

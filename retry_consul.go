@@ -512,10 +512,16 @@ func loadRetryConfigFileFromStoreContext(ctx context.Context, store retryConfigS
 		if err := decodeRetryConfigYAML(data, &file); err != nil {
 			return RetryConfigFile{}, fmt.Errorf("unmarshal retry config from %q: %w", path, err)
 		}
+		if err := validateRetryBudgetFileLayer(file.RetryBudget); err != nil {
+			return RetryConfigFile{}, fmt.Errorf("validate retry config from %q: %w", path, err)
+		}
 		if _, _, _, _, _, err := compileRetryConfigFile(file); err != nil {
 			return RetryConfigFile{}, fmt.Errorf("validate retry config from %q: %w", path, err)
 		}
 		merged = mergeRetryConfigFiles(merged, file)
+	}
+	if _, err := merged.RetryBudget.toConfig(); err != nil {
+		return RetryConfigFile{}, fmt.Errorf("validate merged retry config: %w", err)
 	}
 	return merged, nil
 }
@@ -541,6 +547,7 @@ func retryConfigLookupPaths(appName string) []string {
 func mergeRetryConfigFiles(base, override RetryConfigFile) RetryConfigFile {
 	return RetryConfigFile{
 		Version:       firstNonBlank(override.Version, base.Version),
+		RetryBudget:   mergeRetryBudgetFiles(base.RetryBudget, override.RetryBudget),
 		InternalHosts: mergeStringLists(base.InternalHosts, override.InternalHosts),
 		Downstreams: mergeNamedItems(
 			base.Downstreams,
@@ -562,6 +569,32 @@ func mergeRetryConfigFiles(base, override RetryConfigFile) RetryConfigFile {
 			cloneRetryConfigRuleFile,
 		),
 	}
+}
+
+func mergeRetryBudgetFiles(base, override *RetryBudgetFile) *RetryBudgetFile {
+	if base == nil && override == nil {
+		return nil
+	}
+	merged := RetryBudgetFile{}
+	if base != nil {
+		merged = *base
+	}
+	if override == nil {
+		return &merged
+	}
+	if override.Enabled != nil {
+		merged.Enabled = override.Enabled
+	}
+	if override.Capacity != nil {
+		merged.Capacity = override.Capacity
+	}
+	if override.RetryCost != nil {
+		merged.RetryCost = override.RetryCost
+	}
+	if override.SuccessIncrement != nil {
+		merged.SuccessIncrement = override.SuccessIncrement
+	}
+	return &merged
 }
 
 func mergeRetryClassPolicyFiles(base, override RetryClassPolicyFile) RetryClassPolicyFile {

@@ -75,7 +75,7 @@ func TestMergedPublishedRetryConfigExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() error = %v", err)
 	}
-	scope, policy := provider.resolveRequestConfig(req, DefaultRetryPolicyResolver(req))
+	scope, policy, _ := provider.resolveRequestConfig(req, DefaultRetryPolicyResolver(req))
 
 	if scope.Class != RequestClassInternalWrite {
 		t.Fatalf("scope.Class = %q, want %q", scope.Class, RequestClassInternalWrite)

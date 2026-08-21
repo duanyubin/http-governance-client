@@ -13,12 +13,14 @@ import (
 const namespace = "http_governance_client"
 
 var metricLabels = []string{"caller", "downstream", "operation", "method", "class"}
+var suppressionMetricLabels = append(append([]string{}, metricLabels...), "reason")
 
 // Observer records HTTP governance request results as Prometheus metrics.
 type Observer struct {
 	requests               *stdprometheus.CounterVec
 	retriedRequests        *stdprometheus.CounterVec
 	retries                *stdprometheus.CounterVec
+	retriesSuppressed      *stdprometheus.CounterVec
 	retrySucceededRequests *stdprometheus.CounterVec
 	requestFailures        *stdprometheus.CounterVec
 	requestTimeouts        *stdprometheus.CounterVec
@@ -31,7 +33,7 @@ var _ httpclient.RetryResultObserver = (*Observer)(nil)
 // New creates and registers an Observer with registerer.
 func New(registerer stdprometheus.Registerer) (*Observer, error) {
 	if registerer == nil {
-		return nil, errors.New("Prometheus registerer is nil")
+		return nil, errors.New("prometheus registerer is nil")
 	}
 
 	observer := &Observer{
@@ -50,6 +52,11 @@ func New(registerer stdprometheus.Registerer) (*Observer, error) {
 			Name:      "retries_total",
 			Help:      "Total number of HTTP governance client retry attempts.",
 		}, metricLabels),
+		retriesSuppressed: stdprometheus.NewCounterVec(stdprometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "retries_suppressed_total",
+			Help:      "Total number of HTTP governance client retries suppressed by a local guard.",
+		}, suppressionMetricLabels),
 		retrySucceededRequests: stdprometheus.NewCounterVec(stdprometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "retry_succeeded_requests_total",
@@ -84,6 +91,7 @@ func (o *Observer) Describe(ch chan<- *stdprometheus.Desc) {
 	o.requests.Describe(ch)
 	o.retriedRequests.Describe(ch)
 	o.retries.Describe(ch)
+	o.retriesSuppressed.Describe(ch)
 	o.retrySucceededRequests.Describe(ch)
 	o.requestFailures.Describe(ch)
 	o.requestTimeouts.Describe(ch)
@@ -95,6 +103,7 @@ func (o *Observer) Collect(ch chan<- stdprometheus.Metric) {
 	o.requests.Collect(ch)
 	o.retriedRequests.Collect(ch)
 	o.retries.Collect(ch)
+	o.retriesSuppressed.Collect(ch)
 	o.retrySucceededRequests.Collect(ch)
 	o.requestFailures.Collect(ch)
 	o.requestTimeouts.Collect(ch)
@@ -117,6 +126,9 @@ func (o *Observer) ObserveRequestResult(_ context.Context, event httpclient.Requ
 	}
 	if event.RetryCount > 0 {
 		retries.Add(float64(event.RetryCount))
+	}
+	if event.RetrySuppressedReason != "" {
+		o.retriesSuppressed.WithLabelValues(append(labels, event.RetrySuppressedReason)...).Inc()
 	}
 	if event.RetrySucceeded {
 		retrySucceededRequests.Inc()

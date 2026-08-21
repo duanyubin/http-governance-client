@@ -79,6 +79,18 @@ if _, err := httpclient.SetRetryConfigProviderFromYAML(data); err != nil {
 
 该方式不会启动后台热更新。
 
+需要限制持续故障时的额外重试量，可以在静态 YAML 或 Consul 配置中启用本地重试预算：
+
+```yaml
+retry_budget:
+  enabled: true
+  capacity: 20
+  retry_cost: 10
+  success_increment: 1
+```
+
+这些数值仅用于展示字段。预算按当前 Client 的 `Transport` 和 downstream 隔离；首次请求不受限制。参数选择、恢复速度和热更新语义见[配置参考](config-reference.md#4-retry_budget)。
+
 ## 2. Gin 接入
 
 每个 Gin 服务注册一次治理中间件：
@@ -347,6 +359,7 @@ Consul 配置发生创建、更新或删除时，组件会重新读取应用级�
 - 服务级 Key 删除后回退到应用级配置
 - 两个 Key 都不存在时使用空动态配置和内置默认策略
 - 新配置解析或校验失败时保留上一份有效配置，并继续尝试重新加载
+- `retry_budget` 参数立即更新，但已有 downstream 余额不会重置或补满；关闭后重新启用仍沿用原余额
 
 ### 6.3 停止热更新
 
@@ -365,6 +378,7 @@ httpclient.StopRetryConfigAutoReload()
 | 日志 | 级别 | 含义 |
 | --- | --- | --- |
 | `HTTPClient retry scheduled` | Warn | 已决定执行一次重试 |
+| `HTTPClient retry suppressed` | Warn | 现有条件允许重试，但当前 downstream 的本地预算不足 |
 | `HTTPClient request finished` | Info | 一次 Transport 出站调用的最终结果 |
 | Consul 配置重新加载 | Info / Warn | 热更新成功或失败 |
 
@@ -394,6 +408,7 @@ URL、Header 和 Body 都可能包含查询参数、认证信息、Cookie、Toke
 | 重试成功率 | `retrySucceeded=true` 的日志数 / `retried=true` 的日志数 |
 | 最终失败率 | `finalFailed=true` 的日志数 / 请求量 |
 | 额外尝试量 | `retryCount` 求和 |
+| 预算抑制量 | `retrySuppressedReason=budget_exhausted` 的日志数 |
 | 分维度请求量 | 按 `caller/downstream/operation` 分组后统计日志条数 |
 | 分维度错误量 | 按 `caller/downstream/operation` 分组后统计 `finalFailed=true` 的日志数 |
 
@@ -443,7 +458,7 @@ func initHTTPObserver() {
 
 `SetRetryObserver(...)` 和 `SetRetryResultObserver(...)` 作用于组件默认客户端。使用独立 Client 时，应通过 `ClientOptions.Observer` 和 `ClientOptions.ResultObserver` 在创建 Client 时传入。
 
-`RetryResultObserver` 的最终事件包含 `caller`、`downstream`、`operation`、`class`、尝试次数、状态码和最终原因等字段。
+`RetryResultObserver` 的最终事件包含 `caller`、`downstream`、`operation`、`class`、尝试次数、状态码、最终原因和 `RetrySuppressedReason` 等字段。预算不足时，后者为 `budget_exhausted`；没有发生预算抑制时为空。
 
 `RetryResultObserver` 和 `HTTPClient request finished` 使用相同的 Transport 级结果语义，不包含辅助函数之后的 JSON/Protobuf 解码耗时或解码错误。
 
@@ -511,12 +526,13 @@ client := httpclient.NewClientWithOptions(httpclient.ClientOptions{
 | `http_governance_client_requests_total` | Counter | 最终结果事件数 |
 | `http_governance_client_retried_requests_total` | Counter | 实际发生过重试的请求数 |
 | `http_governance_client_retries_total` | Counter | 额外重试次数之和 |
+| `http_governance_client_retries_suppressed_total` | Counter | 已满足其他重试条件、但被本地预算抑制的重试数 |
 | `http_governance_client_retry_succeeded_requests_total` | Counter | 重试后最终成功的请求数 |
 | `http_governance_client_request_failures_total` | Counter | 最终失败的请求数 |
 | `http_governance_client_request_timeouts_total` | Counter | 最终判定为超时的请求数 |
 | `http_governance_client_request_duration_seconds` | Histogram | 从首次尝试开始到最终结果的 Transport 级耗时 |
 
-所有指标只使用 `caller`、`downstream`、`operation`、`method`、`class` 五个标签，不包含 URL、状态码、错误文本、请求 ID 或重试原因。应通过 `operations` 配置稳定的逻辑操作名；未配置时，包含资源 ID 的回退 operation 可能造成高基数。
+所有指标使用 `caller`、`downstream`、`operation`、`method`、`class` 五个基础标签；`retries_suppressed_total` 额外包含 `reason`，当前只产生 `budget_exhausted`。指标不包含 URL、状态码、错误文本或请求 ID。应通过 `operations` 配置稳定的逻辑操作名；未配置时，包含资源 ID 的回退 operation 可能造成高基数。
 
 指标与 7.2 的最终结果日志使用相同的 Transport 级语义。命中 `SkipperFunc` 的请求不产生指标；自动重定向的每一跳分别计数；辅助函数之后的 JSON/Protobuf 解码错误和耗时不计入指标。超时请求通常也属于最终失败请求，因此两个计数可能重叠。
 
@@ -532,6 +548,9 @@ sum(rate(http_governance_client_retries_total[5m]))
 
 # 最近 1 小时的额外重试次数
 sum(increase(http_governance_client_retries_total[1h]))
+
+# 每秒因本地预算不足而被抑制的重试数
+sum(rate(http_governance_client_retries_suppressed_total{reason="budget_exhausted"}[5m]))
 
 # 重试成功率
 100 * sum(rate(http_governance_client_retry_succeeded_requests_total[5m]))

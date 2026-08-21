@@ -18,6 +18,7 @@ import (
 // RetryConfigFile is the versioned YAML/JSON model for retry governance.
 type RetryConfigFile struct {
 	Version       string                   `yaml:"version" json:"version"`
+	RetryBudget   *RetryBudgetFile         `yaml:"retry_budget" json:"retry_budget"`
 	InternalHosts []string                 `yaml:"internal_hosts" json:"internal_hosts"`
 	Downstreams   []RetryDownstreamFile    `yaml:"downstreams" json:"downstreams"`
 	Operations    []RetryOperationRuleFile `yaml:"operations" json:"operations"`
@@ -89,6 +90,7 @@ type ManagedRetryConfigProvider struct {
 	internalHosts []string
 	downstreams   []compiledDownstream
 	operations    []compiledOperationRule
+	retryBudget   retryBudgetConfig
 }
 
 type compiledRetryConfigRule struct {
@@ -210,7 +212,7 @@ func (p *ManagedRetryConfigProvider) resolveRetryConfigScope(req *http.Request, 
 	return scope
 }
 
-func (p *ManagedRetryConfigProvider) resolveRequestConfig(req *http.Request, base RetryPolicy) (RetryConfigScope, RetryPolicy) {
+func (p *ManagedRetryConfigProvider) resolveRequestConfig(req *http.Request, base RetryPolicy) (RetryConfigScope, RetryPolicy, retryBudgetConfig) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -226,7 +228,7 @@ func (p *ManagedRetryConfigProvider) resolveRequestConfig(req *http.Request, bas
 		}
 	}
 	scope := p.resolveRetryConfigScope(req, retryConfigScopeFromRequest(req, class))
-	return scope, p.resolveRetryPolicy(scope, base)
+	return scope, p.resolveRetryPolicy(scope, base), p.retryBudget
 }
 
 // UpdateFromYAML validates and atomically replaces the current configuration.
@@ -256,6 +258,13 @@ func decodeRetryConfigYAML(data []byte, file *RetryConfigFile) error {
 
 // Update validates and atomically replaces the current configuration.
 func (p *ManagedRetryConfigProvider) Update(file RetryConfigFile) error {
+	if err := validateRetryBudgetFileLayer(file.RetryBudget); err != nil {
+		return err
+	}
+	retryBudget, err := file.RetryBudget.toConfig()
+	if err != nil {
+		return err
+	}
 	classPatches, rules, internalHosts, downstreams, operations, err := compileRetryConfigFile(file)
 	if err != nil {
 		return err
@@ -267,6 +276,7 @@ func (p *ManagedRetryConfigProvider) Update(file RetryConfigFile) error {
 	p.internalHosts = internalHosts
 	p.downstreams = downstreams
 	p.operations = operations
+	p.retryBudget = retryBudget
 	return nil
 }
 

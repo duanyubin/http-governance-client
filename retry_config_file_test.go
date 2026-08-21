@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"fmt"
 	stdhttp "net/http"
 	"strings"
 	"testing"
@@ -58,6 +59,90 @@ rules:
 	}, base)
 	if externalPolicy.PerAttemptTimeout != 7*time.Second {
 		t.Fatalf("externalPolicy.PerAttemptTimeout = %v, want 7s", externalPolicy.PerAttemptTimeout)
+	}
+}
+
+func TestManagedRetryConfigProviderResolvesRetryBudget(t *testing.T) {
+	provider, err := NewManagedRetryConfigProviderFromYAML([]byte(`
+version: v1
+retry_budget:
+  enabled: true
+  capacity: 20
+  retry_cost: 10
+  success_increment: 1
+`))
+	if err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+	req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	_, _, budget := provider.resolveRequestConfig(req, RetryPolicy{})
+	want := retryBudgetConfig{Enabled: true, Capacity: 20, RetryCost: 10, SuccessIncrement: 1}
+	if budget != want {
+		t.Fatalf("retry budget = %+v, want %+v", budget, want)
+	}
+}
+
+func TestManagedRetryConfigProviderDefaultsRetryBudgetToDisabled(t *testing.T) {
+	provider, err := NewManagedRetryConfigProviderFromYAML([]byte("version: v1\n"))
+	if err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
+	}
+	req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://billing.example.com/orders", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	_, _, budget := provider.resolveRequestConfig(req, RetryPolicy{})
+	if budget.Enabled {
+		t.Fatalf("retry budget = %+v, want disabled", budget)
+	}
+}
+
+func TestManagedRetryConfigProviderRejectsInvalidRetryBudget(t *testing.T) {
+	tests := []struct {
+		name             string
+		capacity         int
+		retryCost        int
+		successIncrement int
+	}{
+		{name: "zero capacity", capacity: 0, retryCost: 10, successIncrement: 1},
+		{name: "negative capacity", capacity: -1, retryCost: 10, successIncrement: 1},
+		{name: "zero retry cost", capacity: 20, retryCost: 0, successIncrement: 1},
+		{name: "negative retry cost", capacity: 20, retryCost: -1, successIncrement: 1},
+		{name: "zero success increment", capacity: 20, retryCost: 10, successIncrement: 0},
+		{name: "negative success increment", capacity: 20, retryCost: 10, successIncrement: -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := fmt.Sprintf("version: v1\nretry_budget:\n  enabled: true\n  capacity: %d\n  retry_cost: %d\n  success_increment: %d\n", tt.capacity, tt.retryCost, tt.successIncrement)
+			if _, err := NewManagedRetryConfigProviderFromYAML([]byte(data)); err == nil {
+				t.Fatal("NewManagedRetryConfigProviderFromYAML() error = nil, want validation error")
+			}
+		})
+	}
+}
+
+func TestManagedRetryConfigProviderRejectsIncompleteEnabledRetryBudget(t *testing.T) {
+	tests := []string{
+		"capacity: 20\nretry_cost: 10",
+		"capacity: 20\nsuccess_increment: 1",
+		"retry_cost: 10\nsuccess_increment: 1",
+	}
+	for _, fields := range tests {
+		data := "version: v1\nretry_budget:\n  enabled: true\n  " + strings.ReplaceAll(fields, "\n", "\n  ") + "\n"
+		if _, err := NewManagedRetryConfigProviderFromYAML([]byte(data)); err == nil {
+			t.Fatalf("NewManagedRetryConfigProviderFromYAML(%q) error = nil, want incomplete budget error", fields)
+		}
+	}
+}
+
+func TestManagedRetryConfigProviderAllowsDisabledIncompleteRetryBudget(t *testing.T) {
+	if _, err := NewManagedRetryConfigProviderFromYAML([]byte("version: v1\nretry_budget:\n  enabled: false\n")); err != nil {
+		t.Fatalf("NewManagedRetryConfigProviderFromYAML() error = %v", err)
 	}
 }
 
@@ -982,7 +1067,7 @@ func TestManagedRetryConfigProviderResolvesRequestFromOneConfigGeneration(t *tes
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	scope, policy := provider.resolveRequestConfig(req, RetryPolicy{})
+	scope, policy, _ := provider.resolveRequestConfig(req, RetryPolicy{})
 
 	if scope.Class != RequestClassInternalRead {
 		t.Fatalf("scope.Class = %q, want %q", scope.Class, RequestClassInternalRead)
