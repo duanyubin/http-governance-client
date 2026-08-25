@@ -55,7 +55,7 @@ func initHTTP(consulAddress string) error {
 服务级配置在应用级配置之后合并。没有 Consul 时，可通过
 `SetRetryConfigProviderFromYAML(...)` 加载静态配置。
 
-`Setup()` 是读取 `--env`、`--name`、`--consul` 进程参数的便捷入口。库代码和测试通常优先使用显式的 `SetupWithOptions(...)`。
+`Setup()` 是读取 `--env`/`-e`、`--name`/`-n`、`--consul`/`-c` 进程参数的便捷入口。长短参数均支持空格分隔和 `=` 写法。库代码和测试通常优先使用显式的 `SetupWithOptions(...)`。
 
 ### 2. Gin 链路约束
 

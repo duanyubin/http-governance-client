@@ -46,7 +46,7 @@ err := httpclient.SetupWithOptions(httpclient.SetupOptions{
 
 ### 1.2 从进程参数初始化
 
-`Setup()` 会读取 `--env`、`--name` 和 `--consul`：
+`Setup()` 会读取 `--env`/`-e`、`--name`/`-n` 和 `--consul`/`-c`。长短参数均支持空格分隔和 `=` 写法：
 
 ```go
 if err := httpclient.Setup(); err != nil {
@@ -58,6 +58,12 @@ if err := httpclient.Setup(); err != nil {
 
 ```text
 --env staging --name orders-api --consul http://127.0.0.1:8500
+```
+
+等价的短参数写法：
+
+```text
+-e staging -n orders-api -c http://127.0.0.1:8500
 ```
 
 该入口适用于已经统一使用这些启动参数的服务。通用库代码和测试应优先使用显式参数，避免依赖调用进程的 `os.Args`。

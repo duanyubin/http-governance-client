@@ -45,6 +45,50 @@ func TestParseSetupArgsSupportsEqualFlags(t *testing.T) {
 	}
 }
 
+func TestParseSetupArgsSupportsShortFlags(t *testing.T) {
+	options := parseSetupArgs([]string{
+		"-e", "staging",
+		"-n", "shop",
+		"-c", "consul-${profile}.example.com:8500",
+	})
+	if options.Env != "staging" {
+		t.Fatalf("Env = %q, want staging", options.Env)
+	}
+	if options.Name != "shop" {
+		t.Fatalf("Name = %q, want shop", options.Name)
+	}
+	if options.Consul != "consul-${profile}.example.com:8500" {
+		t.Fatalf("Consul = %q, want consul-${profile}.example.com:8500", options.Consul)
+	}
+}
+
+func TestParseSetupArgsSupportsShortEqualFlags(t *testing.T) {
+	options := parseSetupArgs([]string{
+		"-e=staging",
+		"-n=shop",
+		"-c=http://consul-staging.example.com:8500/",
+	})
+	if options.Env != "staging" {
+		t.Fatalf("Env = %q, want staging", options.Env)
+	}
+	if options.Name != "shop" {
+		t.Fatalf("Name = %q, want shop", options.Name)
+	}
+	if options.Consul != "http://consul-staging.example.com:8500/" {
+		t.Fatalf("Consul = %q, want full endpoint", options.Consul)
+	}
+}
+
+func TestParseSetupArgsDoesNotConsumeShortFlagAsMissingValue(t *testing.T) {
+	options := parseSetupArgs([]string{"--env", "-n", "shop"})
+	if options.Env != "" {
+		t.Fatalf("Env = %q, want empty", options.Env)
+	}
+	if options.Name != "shop" {
+		t.Fatalf("Name = %q, want shop", options.Name)
+	}
+}
+
 func TestSetupLoadsRetryConfigFromArgs(t *testing.T) {
 	oldArgs := os.Args
 	oldSetup := setupRetryConfigFromConsul

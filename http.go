@@ -199,7 +199,8 @@ func mutateClientTransport(apply func(*Transport)) {
 }
 
 // Setup initializes caller identity and retry configuration from the current
-// process arguments. It recognizes `--env`, `--name` and `--consul`.
+// process arguments. It recognizes `--env`/`-e`, `--name`/`-n` and
+// `--consul`/`-c`.
 func Setup() error {
 	return SetupWithOptions(parseSetupArgs(os.Args[1:]))
 }
@@ -228,11 +229,11 @@ func parseSetupArgs(args []string) SetupOptions {
 			i++
 		}
 		switch key {
-		case "env":
+		case "env", "e":
 			options.Env = value
-		case "name":
+		case "name", "n":
 			options.Name = value
-		case "consul":
+		case "consul", "c":
 			options.Consul = value
 		}
 	}
@@ -244,10 +245,14 @@ func parseSetupArg(args []string, index int) (key, value string, consumedNext bo
 		return "", "", false
 	}
 	current := strings.TrimSpace(args[index])
-	if !strings.HasPrefix(current, "--") {
+	var trimmed string
+	if strings.HasPrefix(current, "--") {
+		trimmed = strings.TrimPrefix(current, "--")
+	} else if strings.HasPrefix(current, "-") {
+		trimmed = strings.TrimPrefix(current, "-")
+	} else {
 		return "", "", false
 	}
-	trimmed := strings.TrimPrefix(current, "--")
 	if trimmed == "" {
 		return "", "", false
 	}
@@ -258,7 +263,7 @@ func parseSetupArg(args []string, index int) (key, value string, consumedNext bo
 		return strings.TrimSpace(trimmed), "", false
 	}
 	next := strings.TrimSpace(args[index+1])
-	if strings.HasPrefix(next, "--") {
+	if strings.HasPrefix(next, "-") {
 		return strings.TrimSpace(trimmed), "", false
 	}
 	return strings.TrimSpace(trimmed), next, true

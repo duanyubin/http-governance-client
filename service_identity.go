@@ -14,7 +14,7 @@ var (
 // RetryConfigScope.Caller when business code does not provide it explicitly.
 //
 // In normal startup flow this value is injected by Setup() from the `--name`
-// command-line flag.
+// or `-n` command-line flag.
 func SetCallerServiceName(name string) {
 	callerServiceNameMu.Lock()
 	defer callerServiceNameMu.Unlock()
